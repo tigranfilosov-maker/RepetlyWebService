@@ -1,0 +1,81 @@
+function createIcon(path) {
+  return function Icon() {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d={path} />
+      </svg>
+    );
+  };
+}
+
+export const RepetlyMarkIcon = createIcon(
+  "M5 12.5C5 8.36 8.36 5 12.5 5h2.5v2.5A6.5 6.5 0 0 1 8.5 14H5v-1.5Zm4 6.5c0-3.87 3.13-7 7-7h3v3c0 3.87-3.13 7-7 7H9v-3Z",
+);
+
+export const DashboardIcon = createIcon(
+  "M4 13h7V4H4v9Zm9 7h7v-7h-7v7ZM4 20h7v-5H4v5Zm9-9h7V4h-7v7Z",
+);
+
+export const StudentsIcon = createIcon(
+  "M16 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-8 2a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm8 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4ZM8 15c-.29 0-.62.01-.97.04C4.76 15.22 1 16.36 1 19v2h5v-2c0-1.48.81-2.92 2.24-4Z",
+);
+
+export const ScheduleIcon = createIcon(
+  "M7 2v2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7Zm12 8H5v8h14v-8Z",
+);
+
+export const LeadIcon = createIcon(
+  "m12 3 8 4v6c0 5-3.43 9.4-8 10-4.57-.6-8-5-8-10V7l8-4Zm0 5-3 1.5V12h2v-1h2v1h2V9.5L12 8Z",
+);
+
+export const FinanceIcon = createIcon(
+  "M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4Zm1 17.93V12h5.92c-.48 3.39-2.72 6.14-5.92 6.93ZM13 10V5.07L18.53 8H13ZM11 5.07V10H5.47L11 5.07ZM5.08 12H11v6.93c-3.2-.79-5.44-3.54-5.92-6.93Z",
+);
+
+export const PricingIcon = createIcon(
+  "M12 2 4 5.5v6.8c0 4.86 3.16 9.28 8 10.7 4.84-1.42 8-5.84 8-10.7V5.5L12 2Zm.9 5.5c1.88 0 3.32.99 3.57 2.57h-2.07c-.16-.56-.71-.93-1.5-.93-.87 0-1.43.34-1.43.88 0 .48.38.73 1.62 1l.83.18c2.08.45 3.08 1.3 3.08 2.83 0 1.87-1.6 3.07-3.95 3.15v1.33h-1.45v-1.36c-2.18-.16-3.68-1.31-3.84-3.03h2.14c.18.71.79 1.12 1.71 1.12.92 0 1.54-.38 1.54-.97 0-.49-.35-.73-1.41-.97l-1.02-.23c-1.95-.43-3.05-1.39-3.05-2.91 0-1.79 1.48-2.98 3.68-3.12V6.4h1.45v1.14Z",
+);
+
+export const AnalyticsIcon = createIcon(
+  "M5 9.2h3V19H5V9.2Zm5.5-4.2h3V19h-3V5Zm5.5 7h3v7h-3v-7Z",
+);
+
+export const ZoomIcon = createIcon(
+  "M12 7a5 5 0 0 1 5 5v6H7v-6a5 5 0 0 1 5-5Zm0-5a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm8 10.5.01-.5A8.01 8.01 0 0 0 12 4a8.01 8.01 0 0 0-8.01 8l.01.5L2 16v2h4v4h4v-4h4v4h4v-4h4v-2l-2-3.5Z",
+);
+
+export const BellIcon = createIcon(
+  "M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm6-6V11a6 6 0 1 0-12 0v5L4 18v1h16v-1l-2-2Z",
+);
+
+export const MessageIcon = createIcon(
+  "M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8A2.5 2.5 0 0 1 17.5 16H10l-4.5 4v-4H6.5A2.5 2.5 0 0 1 4 13.5v-8Z",
+);
+
+export const ProfileIcon = createIcon(
+  "M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5Zm0 2c-4.41 0-8 2.24-8 5v2h16v-2c0-2.76-3.59-5-8-5Z",
+);
+
+export const ManagementIcon = createIcon(
+  "M4 5a2 2 0 0 1 2-2h5v7H4V5Zm9-2h5a2 2 0 0 1 2 2v5h-7V3ZM4 12h7v9H6a2 2 0 0 1-2-2v-7Zm9 0h7v7a2 2 0 0 1-2 2h-5v-9Z",
+);
+
+export const BoardIcon = createIcon(
+  "M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-7l-3 3-3-3H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm4 5.25A1.25 1.25 0 1 0 8 11.75a1.25 1.25 0 0 0 0-2.5Zm4 0A1.25 1.25 0 1 0 12 11.75a1.25 1.25 0 0 0 0-2.5Zm4 0A1.25 1.25 0 1 0 16 11.75a1.25 1.25 0 0 0 0-2.5Z",
+);
+
+export const SettingsIcon = createIcon(
+  "m19.14 12.94.04-.94-.04-.94 2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.08 7.08 0 0 0-1.63-.94L14.4 2.7a.5.5 0 0 0-.49-.4h-3.84a.5.5 0 0 0-.49.4l-.36 2.62c-.58.22-1.13.53-1.64.94l-2.38-.96a.5.5 0 0 0-.6.22L2.68 8.84a.5.5 0 0 0 .12.64l2.03 1.58-.04.94.04.94-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.4 1.05.72 1.63.94l.36 2.62a.5.5 0 0 0 .49.4h3.84a.5.5 0 0 0 .49-.4l.36-2.62c.58-.22 1.13-.53 1.64-.94l2.38.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z",
+);
+
+export const MoonIcon = createIcon(
+  "M21 12.79A9 9 0 0 1 11.21 3c0 .34-.03.67-.03 1a9 9 0 1 0 9.82 9.79Z",
+);
+
+export const LogoutIcon = createIcon(
+  "M10 17v-2h4V9h-4V7h4a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-4Zm-1-1-5-4 5-4v3h6v2H9v3Z",
+);
+
+export const SidebarToggleIcon = createIcon(
+  "M8.7 12 14.35 6.35l1.4 1.4L11.5 12l4.25 4.25-1.4 1.4L8.7 12Z",
+);
