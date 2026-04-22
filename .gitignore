@@ -22,5 +22,19 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+
+.vs/
+.history/
 .DS_Store
 Thumbs.db
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.rsuser
