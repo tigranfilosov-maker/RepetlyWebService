@@ -11,6 +11,7 @@ export function SignUpPage() {
   const navigate = useNavigate();
   const [formState, setFormState] = useState({
     fullName: "",
+    username: "",
     email: "",
     phoneNumber: "",
     role: "teacher",
@@ -72,6 +73,16 @@ export function SignUpPage() {
           value={formState.email}
           onChange={(event) =>
             setFormState((current) => ({ ...current, email: event.target.value }))
+          }
+        />
+        <Field
+          id="sign-up-username"
+          label="Никнейм"
+          autoComplete="username"
+          placeholder="your_username"
+          value={formState.username}
+          onChange={(event) =>
+            setFormState((current) => ({ ...current, username: event.target.value }))
           }
         />
         <Field

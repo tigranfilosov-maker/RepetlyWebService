@@ -1,5 +1,9 @@
+import { useEffect } from "react";
 import { Link } from "react-router-dom";
+import calendarMainImage from "../assets/calendar-main-png.png";
 import { SiteMark } from "../components/SiteMark";
+import { MoonIcon, SunIcon } from "../components/icons";
+import { useTheme } from "../theme/ThemeContext";
 
 const benefitItems = [
   {
@@ -47,6 +51,12 @@ const faqItems = [
 ];
 
 export function LandingPage() {
+  const { theme, setTheme, toggleTheme } = useTheme();
+
+  useEffect(() => {
+    setTheme("light");
+  }, [setTheme]);
+
   return (
     <div className="landing-shell">
       <header className="landing-header">
@@ -65,11 +75,21 @@ export function LandingPage() {
         </nav>
 
         <div className="landing-actions">
+          <button
+            type="button"
+            className="landing-theme-toggle"
+            onClick={toggleTheme}
+            aria-label={theme === "dark" ? "Переключить на светлую тему" : "Переключить на тёмную тему"}
+            title={theme === "dark" ? "Светлая тема" : "Тёмная тема"}
+          >
+            {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+            <span>{theme === "dark" ? "Light" : "Dark"}</span>
+          </button>
           <Link className="landing-button landing-button--ghost" to="/sign-in">
-            Sign in
+            Вход
           </Link>
           <Link className="landing-button" to="/sign-up">
-            Sign up
+            Регистрация
           </Link>
         </div>
       </header>
@@ -77,11 +97,10 @@ export function LandingPage() {
       <main className="landing-main">
         <section className="landing-hero">
           <div className="landing-hero__copy">
-            <p className="eyebrow">Tutor SaaS</p>
             <h1>Платформа для преподавателей, которые хотят работать как современный сервис</h1>
             <p>
-              Repetly помогает выстроить доверительный и понятный цифровой опыт для репетитора: войти в
-              систему, организовать процессы и держать рабочее пространство в одном месте.
+              Repetly помогает выстроить доверительный и понятный цифровой опыт для репетитора: войти в систему,
+              организовать процессы и держать рабочее пространство в одном месте.
             </p>
 
             <div className="landing-hero__actions">
@@ -95,23 +114,13 @@ export function LandingPage() {
           </div>
 
           <div className="landing-showcase">
-            <div className="landing-showcase__panel landing-showcase__panel--large" />
-            <div className="landing-showcase__grid">
-              <span />
-              <span />
-              <span />
-            </div>
-            <div className="landing-showcase__rows">
-              <div />
-              <div />
-              <div />
-            </div>
+            <img className="landing-showcase__image" src={calendarMainImage} alt="Календарь Repetly" />
           </div>
         </section>
 
         <section className="landing-benefits" id="benefits">
           <div className="landing-section-heading">
-            <p className="eyebrow">Benefits</p>
+            <p className="eyebrow">Преимущества</p>
             <h2>Ключевые преимущества платформы</h2>
             <p>Коротко и понятно о том, почему Repetly воспринимается как аккуратный и профессиональный продукт.</p>
           </div>
@@ -128,7 +137,7 @@ export function LandingPage() {
 
         <section className="landing-support" id="why-repetly">
           <div className="landing-section-heading">
-            <p className="eyebrow">Why Repetly</p>
+            <p className="eyebrow">Почему Repetly</p>
             <h2>Почему пользователи выбирают такой формат</h2>
             <p>Платформа объясняет ценность быстро: чистый вход, понятная структура, единая точка начала работы.</p>
           </div>
@@ -144,8 +153,7 @@ export function LandingPage() {
         </section>
 
         <section className="landing-cta">
-          <div>
-            <p className="eyebrow">Start</p>
+          <div className="landing-cta__content">
             <h2>Откройте вход в систему и начните строить свой преподавательский кабинет внутри Repetly</h2>
           </div>
           <div className="landing-cta__actions">
@@ -165,19 +173,28 @@ export function LandingPage() {
             <h3>FAQ</h3>
             <div className="landing-faq">
               {faqItems.map((item) => (
-                <article key={item.question}>
-                  <strong>{item.question}</strong>
-                  <p>{item.answer}</p>
-                </article>
+                <details key={item.question} className="landing-faq__item">
+                  <summary>
+                    <strong>{item.question}</strong>
+                    <span className="landing-faq__toggle" aria-hidden="true">
+                      +
+                    </span>
+                  </summary>
+                  <div className="landing-faq__answer">
+                    <div className="landing-faq__answer-inner">
+                      <p>{item.answer}</p>
+                    </div>
+                  </div>
+                </details>
               ))}
             </div>
           </section>
 
           <section>
-            <h3>Useful links</h3>
+            <h3>Полезные ссылки</h3>
             <div className="landing-footer__links">
-              <Link to="/sign-in">Sign in</Link>
-              <Link to="/sign-up">Sign up</Link>
+              <Link to="/sign-in">Вход</Link>
+              <Link to="/sign-up">Регистрация</Link>
               <a href="#benefits">Преимущества</a>
               <a href="#why-repetly">Почему Repetly</a>
             </div>
@@ -185,10 +202,7 @@ export function LandingPage() {
 
           <section>
             <h3>О проекте</h3>
-            <p>
-              Repetly создается как SaaS-продукт для репетиторов с современным, понятным и профессиональным
-              пользовательским опытом.
-            </p>
+            <p>Repetly создается как SaaS-продукт для репетиторов с современным, понятным и профессиональным пользовательским опытом.</p>
             <p className="landing-footer__meta">Repetly, all rights reserved</p>
           </section>
         </div>

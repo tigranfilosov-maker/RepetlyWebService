@@ -9,6 +9,14 @@ function getInitials(name) {
     .join("");
 }
 
+function getEntitySecondaryText(entity) {
+  if (entity.username) {
+    return `@${entity.username}`;
+  }
+
+  return entity.email || "";
+}
+
 export function EntityCard({
   entity,
   variant = "default",
@@ -34,7 +42,7 @@ export function EntityCard({
       <div className="entity-square-card__body">
         <div>
           <h3>{entity.fullName}</h3>
-          <p>{entity.email}</p>
+          <p>{getEntitySecondaryText(entity)}</p>
         </div>
 
         {badges.length ? (

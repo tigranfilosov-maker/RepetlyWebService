@@ -1,7 +1,9 @@
-import { Link } from "react-router-dom";
+import { useI18n } from "../i18n/I18nContext";
 import { SiteMark } from "./SiteMark";
 
 export function AuthShell({ title, subtitle, footer, children }) {
+  const { t } = useI18n();
+
   return (
     <div className="auth-shell">
       <div className="auth-shell__backdrop" />
@@ -10,14 +12,13 @@ export function AuthShell({ title, subtitle, footer, children }) {
         <div className="auth-card__hero">
           <div className="auth-brand">
             <SiteMark className="auth-brand__mark" />
-            <div>
+            <div className="auth-brand__title">
               <strong>Repetly</strong>
-              <span>Tutor SaaS platform</span>
             </div>
           </div>
 
           <div className="auth-copy">
-            <p className="eyebrow">Авторизация</p>
+            <p className="eyebrow">{t("auth.eyebrow")}</p>
             <h1>{title}</h1>
             <p>{subtitle}</p>
           </div>
@@ -37,9 +38,6 @@ export function AuthShell({ title, subtitle, footer, children }) {
         <div className="auth-card__form">
           {children}
           {footer ? <div className="auth-footer">{footer}</div> : null}
-          <p className="auth-note">
-            <Link to="/">Вернуться на landing page</Link>.
-          </p>
         </div>
       </section>
     </div>

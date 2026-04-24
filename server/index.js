@@ -18,16 +18,19 @@ import {
   createPasswordResetToken,
   createSessionForUser,
   createUser,
+  ensureUniqueUsername,
   ensureDefaultAdminAccount,
   findPasswordIdentityByEmail,
   getSessionTokenFromRequest,
   getSessionUser,
   getUserByEmail,
   getUserById,
+  getUserByUsername,
   hashPassword,
   listConfiguredProviders,
   listTeacherSubjects,
   mapUser,
+  normalizeUsername,
   revokeAllSessionsForUser,
   revokeSession,
   updateUserProfile,
@@ -64,6 +67,7 @@ app.use(cookieParser(config.sessionSecret));
 
 const registrationSchema = z.object({
   fullName: z.string().trim().min(2, "Введите полное имя."),
+  username: z.string().trim().min(3, "Укажите никнейм минимум из 3 символов."),
   email: z.string().trim().email("Введите корректный email."),
   phoneNumber: z.string().trim().optional().default(""),
   role: z.enum(["teacher", "student"]),
@@ -87,9 +91,10 @@ const resetPasswordSchema = z.object({
 });
 
 const profileUpdateSchema = z.object({
-  fullName: z.string().trim().min(2, "??????? ?????? ???."),
-  email: z.string().trim().email("??????? ?????????? email."),
-  phoneNumber: z.string().trim().max(40, "??????? ??????? ???????.").optional().default(""),
+  fullName: z.string().trim().min(2, "Укажите полное имя."),
+  email: z.string().trim().email("Укажите корректный email."),
+  username: z.string().trim().min(3, "Укажите никнейм минимум из 3 символов.").optional().default(""),
+  phoneNumber: z.string().trim().max(40, "Укажите телефон короче.").optional().default(""),
   avatar: z
     .string()
     .trim()
@@ -98,18 +103,37 @@ const profileUpdateSchema = z.object({
         value === "" ||
         /^https?:\/\//.test(value) ||
         /^data:image\/(png|jpe?g|webp|gif);base64,/i.test(value),
-      "??????? ?????????? URL ??????? ??? ????????? ???????????.",
+      "Укажите корректный URL аватара или data:image.",
     ),
-  subject: z.string().trim().max(120, "??????? ??????? ???????? ????????.").optional().default(""),
+  subject: z.string().trim().max(120, "Укажите предмет короче.").optional().default(""),
   subjects: z.array(z.string().trim().min(1).max(120)).optional().default([]),
 });
 
 const studentInviteSchema = z.object({
-  studentEmail: z.string().trim().email("Введите корректный email студента."),
+  studentUsername: z.string().trim().min(3, "Укажите username ученика."),
 });
 
 const relationshipSubjectsSchema = z.object({
   subjectIds: z.array(z.string().trim().min(1)).default([]),
+});
+
+const homeworkAssignmentSchema = z.object({
+  studentId: z.string().trim().optional().default(""),
+  title: z.string().trim().min(2, "Homework title is required.").max(160),
+  description: z.string().trim().min(2, "Homework description is required.").max(2000),
+  dueDate: z.string().trim().optional().default(""),
+});
+
+const groupSchema = z.object({
+  name: z.string().trim().min(2, "Group name is required.").max(120),
+  description: z.string().trim().max(300).optional().default(""),
+  studentIds: z.array(z.string().trim().min(1)).min(1, "Select at least one student.").default([]),
+});
+
+const groupHomeworkSchema = z.object({
+  title: z.string().trim().min(2, "Homework title is required.").max(160),
+  description: z.string().trim().min(2, "Homework description is required.").max(2000),
+  dueDate: z.string().trim().optional().default(""),
 });
 
 const boardCreateSchema = z.object({
@@ -192,6 +216,14 @@ const telegramWebhookSchema = z.object({
     .object({
       message_id: z.number().int().optional(),
       text: z.string().optional(),
+      contact: z
+        .object({
+          phone_number: z.string().optional(),
+          first_name: z.string().optional(),
+          last_name: z.string().optional(),
+          user_id: z.union([z.number().int(), z.string()]).optional(),
+        })
+        .optional(),
       chat: z.object({
         id: z.union([z.number().int(), z.string()]).optional(),
         type: z.string().optional(),
@@ -200,6 +232,8 @@ const telegramWebhookSchema = z.object({
         .object({
           id: z.union([z.number().int(), z.string()]).optional(),
           username: z.string().optional(),
+          first_name: z.string().optional(),
+          last_name: z.string().optional(),
         })
         .optional(),
     })
@@ -230,6 +264,32 @@ const adminNotificationSchema = z
     message: "Выберите хотя бы одного пользователя.",
     path: ["userIds"],
   });
+
+const DASHBOARD_SLOT_DEFINITIONS = Object.freeze([
+  { key: "stats-1", size: "stat" },
+  { key: "stats-2", size: "stat" },
+  { key: "stats-3", size: "stat" },
+  { key: "feature-main", size: "main" },
+  { key: "side-top", size: "side" },
+  { key: "side-bottom", size: "side" },
+]);
+
+const DASHBOARD_WIDGET_DEFINITIONS = Object.freeze([
+  { type: "upcoming_lesson", label: "Ближайшее занятие", slots: ["stats-1", "stats-2", "stats-3", "side-top", "side-bottom"] },
+  { type: "weekly_load", label: "Нагрузка недели", slots: ["stats-1", "stats-2", "stats-3", "side-top", "side-bottom"] },
+  { type: "messages", label: "Сообщения", slots: ["stats-1", "stats-2", "stats-3", "side-top", "side-bottom"] },
+  { type: "notifications", label: "Уведомления", slots: ["stats-1", "stats-2", "stats-3", "side-top", "side-bottom"] },
+  { type: "connections", label: "Связи", slots: ["stats-1", "stats-2", "stats-3", "side-top", "side-bottom"] },
+  { type: "pending_requests", label: "Заявки", slots: ["stats-1", "stats-2", "stats-3", "side-top", "side-bottom"] },
+  { type: "free_hours", label: "Свободные часы", slots: ["stats-1", "stats-2", "stats-3", "side-top", "side-bottom"] },
+  { type: "today_overview", label: "Сегодня", slots: ["feature-main"] },
+  { type: "day_metrics", label: "Статистика дня", slots: ["feature-main", "side-top", "side-bottom"] },
+  { type: "schedule_status", label: "Статус расписания", slots: ["feature-main", "side-top", "side-bottom"] },
+]);
+
+const dashboardWidgetUpdateSchema = z.object({
+  widgetType: z.string().trim().min(1),
+});
 
 function getClientIp(req) {
   return (
@@ -303,7 +363,7 @@ async function getConnectedUsersForUser(user) {
   if (user.role === "teacher") {
     const students = await all(
       `
-        SELECT u.id, u.full_name, u.email, u.subject, u.phone_number, rel.created_at
+        SELECT u.id, u.full_name, u.username, u.email, u.subject, u.phone_number, rel.created_at
         FROM teacher_student_relationships rel
         INNER JOIN users u ON u.id = rel.student_id
         WHERE rel.teacher_id = ?
@@ -316,6 +376,7 @@ async function getConnectedUsersForUser(user) {
       students.map(async (item) => ({
         id: item.id,
         fullName: item.full_name,
+        username: item.username || "",
         email: item.email,
         subject: item.subject || "",
         phoneNumber: item.phone_number || "",
@@ -331,7 +392,7 @@ async function getConnectedUsersForUser(user) {
 
   const teachers = await all(
     `
-      SELECT u.id, u.full_name, u.email, u.subject, u.phone_number, rel.created_at
+      SELECT u.id, u.full_name, u.username, u.email, u.subject, u.phone_number, rel.created_at
       FROM teacher_student_relationships rel
       INNER JOIN users u ON u.id = rel.teacher_id
       WHERE rel.student_id = ?
@@ -345,9 +406,10 @@ async function getConnectedUsersForUser(user) {
       const subjects = await listTeacherSubjects(item.id);
 
       return {
-        id: item.id,
-        fullName: item.full_name,
-        email: item.email,
+      id: item.id,
+      fullName: item.full_name,
+      username: item.username || "",
+      email: item.email,
         subject: subjects[0]?.name || item.subject || "",
         subjects,
         phoneNumber: item.phone_number || "",
@@ -361,6 +423,420 @@ async function getConnectedUsersForUser(user) {
   return withSubjects;
 }
 
+function normalizeDateValue(value) {
+  const normalized = String(value || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : null;
+}
+
+async function listTeacherStudentRows(teacherId) {
+  return all(
+    `
+      SELECT rel.id, rel.created_at, u.id AS student_id, u.full_name, u.username, u.email, u.phone_number, u.avatar_url
+      FROM teacher_student_relationships rel
+      INNER JOIN users u ON u.id = rel.student_id
+      WHERE rel.teacher_id = ?
+      ORDER BY u.full_name COLLATE NOCASE ASC
+    `,
+    [teacherId],
+  );
+}
+
+async function listTeacherStudentsDetailed(teacherId) {
+  const relationships = await listTeacherStudentRows(teacherId);
+
+  return Promise.all(
+    relationships.map(async (item) => {
+      const subjects = await listRelationshipSubjects(item.student_id, teacherId);
+
+      return {
+        id: item.student_id,
+        relationshipId: item.id,
+        fullName: item.full_name,
+        username: item.username || "",
+        email: item.email,
+        phoneNumber: item.phone_number || "",
+        avatar: item.avatar_url || "",
+        connectedAt: item.created_at,
+        subject: subjects[0]?.name || "",
+        subjects,
+        status: "Active",
+      };
+    }),
+  );
+}
+
+async function ensureTeacherStudentConnection(teacherId, studentId) {
+  return get(
+    `
+      SELECT id, created_at
+      FROM teacher_student_relationships
+      WHERE teacher_id = ? AND student_id = ?
+      LIMIT 1
+    `,
+    [teacherId, studentId],
+  );
+}
+
+async function getTeacherGroupsDetailed(teacherId) {
+  const groups = await all(
+    `
+      SELECT id, name, description, created_at, updated_at
+      FROM groups
+      WHERE teacher_id = ?
+      ORDER BY updated_at DESC, created_at DESC
+    `,
+    [teacherId],
+  );
+
+  return Promise.all(
+    groups.map(async (group) => {
+      const members = await all(
+        `
+          SELECT u.id, u.full_name, u.username, u.email, u.avatar_url, gm.created_at
+          FROM group_memberships gm
+          INNER JOIN users u ON u.id = gm.student_id
+          WHERE gm.group_id = ?
+          ORDER BY u.full_name COLLATE NOCASE ASC
+        `,
+        [group.id],
+      );
+      const homework = await all(
+        `
+          SELECT id, title, description, due_date, status, created_at, updated_at
+          FROM homework_assignments
+          WHERE group_id = ?
+          ORDER BY COALESCE(due_date, '9999-12-31') ASC, updated_at DESC
+        `,
+        [group.id],
+      );
+      const conversation = await get(
+        `
+          SELECT id
+          FROM conversations
+          WHERE type = 'group' AND group_id = ?
+          LIMIT 1
+        `,
+        [group.id],
+      );
+
+      return {
+        id: group.id,
+        name: group.name,
+        description: group.description || "",
+        createdAt: group.created_at,
+        updatedAt: group.updated_at,
+        conversationId: conversation?.id || null,
+        members: members.map((member) => ({
+          id: member.id,
+          fullName: member.full_name,
+          username: member.username || "",
+          email: member.email,
+          avatar: member.avatar_url || "",
+          joinedAt: member.created_at,
+        })),
+        homework: homework.map((item) => ({
+          id: item.id,
+          title: item.title,
+          description: item.description,
+          dueDate: item.due_date || "",
+          status: item.status,
+          createdAt: item.created_at,
+          updatedAt: item.updated_at,
+        })),
+      };
+    }),
+  );
+}
+
+async function syncGroupConversation(groupId, teacherId) {
+  const group = await get(
+    `
+      SELECT id, name
+      FROM groups
+      WHERE id = ? AND teacher_id = ?
+      LIMIT 1
+    `,
+    [groupId, teacherId],
+  );
+
+  if (!group) {
+    return null;
+  }
+
+  const members = await all(
+    `
+      SELECT student_id
+      FROM group_memberships
+      WHERE group_id = ?
+    `,
+    [groupId],
+  );
+  const memberIds = [teacherId, ...members.map((item) => item.student_id)];
+  const timestamp = new Date().toISOString();
+  let conversation = await get(
+    `
+      SELECT id
+      FROM conversations
+      WHERE type = 'group' AND group_id = ?
+      LIMIT 1
+    `,
+    [groupId],
+  );
+
+  if (!conversation) {
+    const conversationId = crypto.randomUUID();
+    await run(
+      `
+        INSERT INTO conversations (id, type, title, group_id, created_at, updated_at)
+        VALUES (?, 'group', ?, ?, ?, ?)
+      `,
+      [conversationId, group.name, groupId, timestamp, timestamp],
+    );
+    conversation = { id: conversationId };
+  } else {
+    await run(
+      `
+        UPDATE conversations
+        SET title = ?, updated_at = ?
+        WHERE id = ?
+      `,
+      [group.name, timestamp, conversation.id],
+    );
+  }
+
+  await run(
+    `
+      DELETE FROM conversation_members
+      WHERE conversation_id = ?
+        AND user_id NOT IN (${memberIds.map(() => "?").join(", ")})
+    `,
+    [conversation.id, ...memberIds],
+  );
+
+  for (const memberId of memberIds) {
+    await run(
+      `
+        INSERT OR IGNORE INTO conversation_members (conversation_id, user_id, last_read_at)
+        VALUES (?, ?, ?)
+      `,
+      [conversation.id, memberId, timestamp],
+    );
+  }
+
+  return conversation.id;
+}
+
+async function listConversationsForUser(userId) {
+  const conversations = await all(
+    `
+      SELECT c.id, c.type, c.title, c.group_id, c.created_at, c.updated_at
+      FROM conversations c
+      INNER JOIN conversation_members cm ON cm.conversation_id = c.id
+      WHERE cm.user_id = ?
+      ORDER BY c.updated_at DESC, c.created_at DESC
+    `,
+    [userId],
+  );
+
+  return Promise.all(
+    conversations.map(async (conversation) => {
+      const latestMessage = await get(
+        `
+          SELECT id, content, created_at, sender_id
+          FROM messages
+          WHERE conversation_id = ?
+          ORDER BY created_at DESC
+          LIMIT 1
+        `,
+        [conversation.id],
+      );
+      const selfMember = await get(
+        `
+          SELECT last_read_at
+          FROM conversation_members
+          WHERE conversation_id = ? AND user_id = ?
+        `,
+        [conversation.id, userId],
+      );
+      const unread =
+        latestMessage
+        && latestMessage.sender_id !== userId
+        && (!selfMember?.last_read_at || latestMessage.created_at > selfMember.last_read_at);
+
+      if (conversation.type === "group") {
+        const members = await all(
+          `
+            SELECT u.id, u.full_name, u.username, u.email
+            FROM conversation_members cm
+            INNER JOIN users u ON u.id = cm.user_id
+            WHERE cm.conversation_id = ? AND u.id != ?
+            ORDER BY u.full_name COLLATE NOCASE ASC
+          `,
+          [conversation.id, userId],
+        );
+
+        return {
+          id: conversation.id,
+          type: "group",
+          title: conversation.title || "Group",
+          groupId: conversation.group_id || null,
+          createdAt: conversation.created_at,
+          updatedAt: conversation.updated_at,
+          lastMessage: latestMessage?.content || "",
+          lastMessageAt: latestMessage?.created_at || conversation.updated_at,
+          isUnread: Boolean(unread),
+          memberCount: members.length,
+          members: members.map((member) => ({
+            id: member.id,
+            fullName: member.full_name,
+            username: member.username || "",
+            email: member.email,
+          })),
+        };
+      }
+
+      const participant = await get(
+        `
+          SELECT u.id, u.full_name, u.username, u.email, u.role, u.subject
+          FROM conversation_members cm
+          INNER JOIN users u ON u.id = cm.user_id
+          WHERE cm.conversation_id = ? AND u.id != ?
+          LIMIT 1
+        `,
+        [conversation.id, userId],
+      );
+
+      return {
+        id: conversation.id,
+        type: "direct",
+        createdAt: conversation.created_at,
+        updatedAt: conversation.updated_at,
+        lastMessage: latestMessage?.content || "",
+        lastMessageAt: latestMessage?.created_at || conversation.updated_at,
+        isUnread: Boolean(unread),
+        participant: participant
+          ? {
+              id: participant.id,
+              fullName: participant.full_name,
+              username: participant.username || "",
+              email: participant.email,
+              role: participant.role,
+              subject: participant.subject || "",
+            }
+          : null,
+      };
+    }),
+  );
+}
+
+async function getConversationResponse(conversationId, userId) {
+  const conversation = await requireConversationMember(conversationId, userId);
+
+  if (!conversation) {
+    return null;
+  }
+
+  await updateConversationReadState(conversationId, userId);
+
+  const baseConversation = await get(
+    `
+      SELECT id, type, title, group_id, created_at, updated_at
+      FROM conversations
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [conversationId],
+  );
+
+  const messages = await all(
+    `
+      SELECT m.id, m.content, m.created_at, m.sender_id, sender.full_name AS sender_name
+      FROM messages m
+      INNER JOIN users sender ON sender.id = m.sender_id
+      WHERE m.conversation_id = ?
+      ORDER BY m.created_at ASC
+    `,
+    [conversationId],
+  );
+
+  if (baseConversation?.type === "group") {
+    const members = await all(
+      `
+        SELECT u.id, u.full_name, u.username, u.email, u.role
+        FROM conversation_members cm
+        INNER JOIN users u ON u.id = cm.user_id
+        WHERE cm.conversation_id = ?
+        ORDER BY CASE WHEN u.id = ? THEN 0 ELSE 1 END, u.full_name COLLATE NOCASE ASC
+      `,
+      [conversationId, userId],
+    );
+
+    return {
+      conversation: {
+        id: baseConversation.id,
+        type: "group",
+        title: baseConversation.title || "Group",
+        groupId: baseConversation.group_id || null,
+        createdAt: baseConversation.created_at,
+        updatedAt: baseConversation.updated_at,
+        members: members.map((member) => ({
+          id: member.id,
+          fullName: member.full_name,
+          username: member.username || "",
+          email: member.email,
+          role: member.role,
+        })),
+      },
+      messages: messages.map((item) => ({
+        id: item.id,
+        content: item.content,
+        createdAt: item.created_at,
+        senderId: item.sender_id,
+        senderName: item.sender_name,
+        isOwn: item.sender_id === userId,
+      })),
+    };
+  }
+
+  const participant = await get(
+    `
+      SELECT u.id, u.full_name, u.username, u.email, u.role, u.subject
+      FROM conversation_members cm
+      INNER JOIN users u ON u.id = cm.user_id
+      WHERE cm.conversation_id = ? AND u.id != ?
+      LIMIT 1
+    `,
+    [conversationId, userId],
+  );
+
+  return {
+    conversation: {
+      id: baseConversation.id,
+      type: "direct",
+      createdAt: baseConversation.created_at,
+      updatedAt: baseConversation.updated_at,
+      participant: participant
+        ? {
+            id: participant.id,
+            fullName: participant.full_name,
+            username: participant.username || "",
+            email: participant.email,
+            role: participant.role,
+            subject: participant.subject || "",
+          }
+        : null,
+    },
+    messages: messages.map((item) => ({
+      id: item.id,
+      content: item.content,
+      createdAt: item.created_at,
+      senderId: item.sender_id,
+      senderName: item.sender_name,
+      isOwn: item.sender_id === userId,
+    })),
+  };
+}
+
 async function getConversationForUsers(userId, participantId) {
   return get(
     `
@@ -368,6 +844,7 @@ async function getConversationForUsers(userId, participantId) {
       FROM conversations c
       INNER JOIN conversation_members cm1 ON cm1.conversation_id = c.id AND cm1.user_id = ?
       INNER JOIN conversation_members cm2 ON cm2.conversation_id = c.id AND cm2.user_id = ?
+      WHERE c.type = 'direct'
       LIMIT 1
     `,
     [userId, participantId],
@@ -806,6 +1283,75 @@ function formatHourRange(startHour, endHour) {
   return `${toHourLabel(startHour)} - ${toHourLabel(endHour)}`;
 }
 
+function getDefaultDashboardWidgetsForRole(_role) {
+  return [];
+}
+
+function findDashboardSlot(slotKey) {
+  return DASHBOARD_SLOT_DEFINITIONS.find((slot) => slot.key === slotKey) || null;
+}
+
+function findDashboardWidgetDefinition(widgetType) {
+  return DASHBOARD_WIDGET_DEFINITIONS.find((widget) => widget.type === widgetType) || null;
+}
+
+function listAvailableWidgetsForSlot(slotKey) {
+  return DASHBOARD_WIDGET_DEFINITIONS.filter((widget) => widget.slots.includes(slotKey));
+}
+
+async function ensureDashboardWidgets(user) {
+  const existing = await all(
+    `
+      SELECT slot_key
+      FROM dashboard_widgets
+      WHERE user_id = ?
+    `,
+    [user.id],
+  );
+
+  if (existing.length > 0) {
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const defaults = getDefaultDashboardWidgetsForRole(user.role);
+
+  for (const item of defaults) {
+    await run(
+      `
+        INSERT INTO dashboard_widgets (id, user_id, slot_key, widget_type, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [crypto.randomUUID(), user.id, item.slotKey, item.widgetType, now, now],
+    );
+  }
+}
+
+async function getDashboardLayoutForUser(user) {
+  await ensureDashboardWidgets(user);
+
+  const rows = await all(
+    `
+      SELECT slot_key, widget_type
+      FROM dashboard_widgets
+      WHERE user_id = ?
+    `,
+    [user.id],
+  );
+
+  const widgetMap = new Map(rows.map((row) => [row.slot_key, row.widget_type]));
+
+  return DASHBOARD_SLOT_DEFINITIONS.map((slot) => ({
+    key: slot.key,
+    size: slot.size,
+    widgetType: widgetMap.get(slot.key) || null,
+    availableWidgets: listAvailableWidgetsForSlot(slot.key).map((widget) => ({
+      type: widget.type,
+      label: widget.label,
+    })),
+  }));
+}
+
 function googleRedirectUri() {
   return `${config.apiBaseUrl}/api/auth/google/callback`;
 }
@@ -931,9 +1477,15 @@ app.get("/api/auth/session", async (req, res) => {
 app.post("/api/auth/register", async (req, res, next) => {
   try {
     const payload = registrationSchema.parse(req.body);
+    const normalizedUsername = normalizeUsername(payload.username);
 
     if (payload.password !== payload.confirmPassword) {
       sendAuthError(res, 400, "Пароли не совпадают.", "password_mismatch");
+      return;
+    }
+
+    if (!normalizedUsername || normalizedUsername.length < 3) {
+      sendAuthError(res, 400, "Укажите корректный никнейм минимум из 3 символов.", "invalid_username");
       return;
     }
 
@@ -951,7 +1503,17 @@ app.post("/api/auth/register", async (req, res, next) => {
       return;
     }
 
-    const user = await createUser(payload);
+    const existingUsernameUser = await getUserByUsername(normalizedUsername);
+
+    if (existingUsernameUser) {
+      sendAuthError(res, 409, "Пользователь с таким никнеймом уже существует.", "duplicate_username");
+      return;
+    }
+
+    const user = await createUser({
+      ...payload,
+      username: normalizedUsername,
+    });
     await updatePasswordIdentity(user.id, payload.email, hashPassword(payload.password));
 
     const sessionToken = await createSessionForUser(user.id, {
@@ -1581,6 +2143,102 @@ app.post("/api/integrations/telegram/webhook", async (req, res, next) => {
   }
 });
 
+app.get("/api/dashboard-layout", requireSession, async (req, res, next) => {
+  try {
+    res.json({
+      slots: await getDashboardLayoutForUser(req.user),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/dashboard-layout", requireSession, async (req, res, next) => {
+  try {
+    await run(
+      `
+        DELETE FROM dashboard_widgets
+        WHERE user_id = ?
+      `,
+      [req.user.id],
+    );
+
+    res.json({
+      slots: await getDashboardLayoutForUser(req.user),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/dashboard-layout/:slotKey", requireSession, async (req, res, next) => {
+  try {
+    const slot = findDashboardSlot(req.params.slotKey);
+
+    if (!slot) {
+      sendAuthError(res, 404, "Слот не найден.", "dashboard_slot_not_found");
+      return;
+    }
+
+    const payload = dashboardWidgetUpdateSchema.parse(req.body);
+    const widget = findDashboardWidgetDefinition(payload.widgetType);
+
+    if (!widget || !widget.slots.includes(slot.key)) {
+      sendAuthError(res, 400, "Этот виджет нельзя поставить в выбранный слот.", "dashboard_widget_invalid");
+      return;
+    }
+
+    const now = new Date().toISOString();
+
+    await run(
+      `
+        INSERT INTO dashboard_widgets (id, user_id, slot_key, widget_type, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, slot_key) DO UPDATE SET
+          widget_type = excluded.widget_type,
+          updated_at = excluded.updated_at
+      `,
+      [crypto.randomUUID(), req.user.id, slot.key, widget.type, now, now],
+    );
+
+    res.json({
+      slot: {
+        key: slot.key,
+        size: slot.size,
+        widgetType: widget.type,
+      },
+      slots: await getDashboardLayoutForUser(req.user),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/dashboard-layout/:slotKey", requireSession, async (req, res, next) => {
+  try {
+    const slot = findDashboardSlot(req.params.slotKey);
+
+    if (!slot) {
+      sendAuthError(res, 404, "Слот не найден.", "dashboard_slot_not_found");
+      return;
+    }
+
+    await run(
+      `
+        DELETE FROM dashboard_widgets
+        WHERE user_id = ? AND slot_key = ?
+      `,
+      [req.user.id, slot.key],
+    );
+
+    res.json({
+      slots: await getDashboardLayoutForUser(req.user),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/dashboard-summary", requireSession, async (req, res, next) => {
   try {
     const now = new Date();
@@ -1893,13 +2551,29 @@ app.patch("/api/profile", requireSession, async (req, res, next) => {
   try {
     const payload = profileUpdateSchema.parse(req.body);
     const existingUser = await getUserByEmail(payload.email);
+    const normalizedUsername = normalizeUsername(payload.username);
 
     if (existingUser && existingUser.id !== req.user.id) {
       sendAuthError(res, 409, "Пользователь с таким email уже существует.", "duplicate_email");
       return;
     }
 
-    const updatedUser = await updateUserProfile(req.user.id, payload);
+    if (!normalizedUsername || normalizedUsername.length < 3) {
+      sendAuthError(res, 400, "Укажите корректный никнейм минимум из 3 символов.", "invalid_username");
+      return;
+    }
+
+    const existingUsernameUser = await getUserByUsername(normalizedUsername);
+
+    if (existingUsernameUser && existingUsernameUser.id !== req.user.id) {
+      sendAuthError(res, 409, "Пользователь с таким никнеймом уже существует.", "duplicate_username");
+      return;
+    }
+
+    const updatedUser = await updateUserProfile(req.user.id, {
+      ...payload,
+      username: normalizedUsername,
+    });
 
     if (!updatedUser) {
       sendAuthError(res, 404, "Пользователь не найден.", "user_not_found");
@@ -1914,9 +2588,9 @@ app.patch("/api/profile", requireSession, async (req, res, next) => {
 
 app.get("/api/students/search", requireSession, requireRole("teacher"), async (req, res, next) => {
   try {
-    const email = req.query.email?.toString().trim().toLowerCase() || "";
+    const username = normalizeUsername(req.query.username?.toString() || "");
 
-    if (!email) {
+    if (!username) {
       res.json({ results: [] });
       return;
     }
@@ -1925,9 +2599,9 @@ app.get("/api/students/search", requireSession, requireRole("teacher"), async (r
       `
         SELECT *
         FROM users
-        WHERE email = ? AND role = 'student' AND status = 'active'
+        WHERE username = ? AND role = 'student' AND status = 'active'
       `,
-      [email],
+      [username],
     );
 
     if (!student) {
@@ -1940,6 +2614,7 @@ app.get("/api/students/search", requireSession, requireRole("teacher"), async (r
         {
           id: student.id,
           fullName: student.full_name,
+          username: student.username || "",
           email: student.email,
           phoneNumber: student.phone_number,
         },
@@ -1952,20 +2627,11 @@ app.get("/api/students/search", requireSession, requireRole("teacher"), async (r
 
 app.get("/api/teacher-students", requireSession, requireRole("teacher"), async (req, res, next) => {
   try {
-    const [relationships, pendingRequests] = await Promise.all([
+    const [students, pendingRequests, homeworkAssignments] = await Promise.all([
+      listTeacherStudentsDetailed(req.user.id),
       all(
         `
-          SELECT rel.id, rel.created_at, u.id as student_id, u.full_name, u.email, u.phone_number
-          FROM teacher_student_relationships rel
-          INNER JOIN users u ON u.id = rel.student_id
-          WHERE rel.teacher_id = ?
-          ORDER BY rel.created_at DESC
-        `,
-        [req.user.id],
-      ),
-      all(
-        `
-          SELECT req.id, req.status, req.created_at, req.updated_at, u.id as student_id, u.full_name, u.email
+          SELECT req.id, req.status, req.created_at, req.updated_at, u.id as student_id, u.full_name, u.username, u.email
           FROM teacher_student_requests req
           INNER JOIN users u ON u.id = req.student_id
           WHERE req.teacher_id = ? AND req.status = 'pending'
@@ -1973,33 +2639,43 @@ app.get("/api/teacher-students", requireSession, requireRole("teacher"), async (
         `,
         [req.user.id],
       ),
+      all(
+        `
+          SELECT
+            hw.id,
+            hw.student_id,
+            hw.title,
+            hw.description,
+            hw.due_date,
+            hw.status,
+            hw.created_at,
+            hw.updated_at
+          FROM homework_assignments hw
+          WHERE hw.teacher_id = ? AND hw.student_id IS NOT NULL
+          ORDER BY COALESCE(hw.due_date, '9999-12-31') ASC, hw.updated_at DESC
+        `,
+        [req.user.id],
+      ),
     ]);
-
-    const students = await Promise.all(
-      relationships.map(async (item) => {
-        const subjects = await listRelationshipSubjects(item.student_id, req.user.id);
-
-        return {
-          id: item.student_id,
-          relationshipId: item.id,
-          fullName: item.full_name,
-          email: item.email,
-          phoneNumber: item.phone_number,
-          connectedAt: item.created_at,
-          subject: subjects[0]?.name || "",
-          subjects,
-          status: "Active",
-        };
-      }),
-    );
 
     res.json({
       students,
       availableSubjects: await listTeacherSubjects(req.user.id),
+      homeworkAssignments: homeworkAssignments.map((item) => ({
+        id: item.id,
+        studentId: item.student_id,
+        title: item.title,
+        description: item.description,
+        dueDate: item.due_date || "",
+        status: item.status,
+        createdAt: item.created_at,
+        updatedAt: item.updated_at,
+      })),
       pendingRequests: pendingRequests.map((item) => ({
         id: item.id,
         studentId: item.student_id,
         fullName: item.full_name,
+        username: item.username || "",
         email: item.email,
         status: item.status,
         createdAt: item.created_at,
@@ -2094,6 +2770,254 @@ app.patch("/api/teacher-students/:studentId/subjects", requireSession, requireRo
         .filter((item) => payload.subjectIds.includes(item.id))
         .map((item) => ({ id: item.id, name: item.name })),
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/teacher-students/:studentId/homework", requireSession, requireRole("teacher"), async (req, res, next) => {
+  try {
+    const payload = homeworkAssignmentSchema.parse({
+      ...req.body,
+      studentId: req.params.studentId,
+    });
+    const relationship = await ensureTeacherStudentConnection(req.user.id, payload.studentId);
+
+    if (!relationship) {
+      sendAuthError(res, 404, "Student connection not found.", "relationship_not_found");
+      return;
+    }
+
+    const assignmentId = crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+    const dueDate = normalizeDateValue(payload.dueDate);
+
+    await run(
+      `
+        INSERT INTO homework_assignments (
+          id, teacher_id, student_id, group_id, title, description, due_date, status, created_at, updated_at
+        ) VALUES (?, ?, ?, NULL, ?, ?, ?, 'assigned', ?, ?)
+      `,
+      [assignmentId, req.user.id, payload.studentId, payload.title, payload.description, dueDate, timestamp, timestamp],
+    );
+
+    await createNotification(payload.studentId, {
+      type: "homework_assigned",
+      title: "New homework assigned",
+      body: payload.title,
+      link: "/students",
+      meta: {
+        assignmentId,
+        teacherId: req.user.id,
+      },
+    });
+
+    res.status(201).json({
+      assignment: {
+        id: assignmentId,
+        studentId: payload.studentId,
+        title: payload.title,
+        description: payload.description,
+        dueDate: dueDate || "",
+        status: "assigned",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/groups", requireSession, requireRole("teacher"), async (req, res, next) => {
+  try {
+    const [groups, students] = await Promise.all([
+      getTeacherGroupsDetailed(req.user.id),
+      listTeacherStudentsDetailed(req.user.id),
+    ]);
+
+    res.json({ groups, students });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/groups", requireSession, requireRole("teacher"), async (req, res, next) => {
+  try {
+    const payload = groupSchema.parse(req.body);
+    const connectedStudents = await listTeacherStudentsDetailed(req.user.id);
+    const connectedIds = new Set(connectedStudents.map((student) => student.id));
+
+    if (payload.studentIds.some((studentId) => !connectedIds.has(studentId))) {
+      sendAuthError(res, 400, "Groups can include only connected students.", "invalid_group_members");
+      return;
+    }
+
+    const groupId = crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+
+    await run(
+      `
+        INSERT INTO groups (id, teacher_id, name, description, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [groupId, req.user.id, payload.name, payload.description || "", timestamp, timestamp],
+    );
+
+    for (const studentId of [...new Set(payload.studentIds)]) {
+      await run(
+        `
+          INSERT INTO group_memberships (group_id, student_id, created_at)
+          VALUES (?, ?, ?)
+        `,
+        [groupId, studentId, timestamp],
+      );
+    }
+
+    await syncGroupConversation(groupId, req.user.id);
+    res.status(201).json({ groups: await getTeacherGroupsDetailed(req.user.id) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/groups/:groupId", requireSession, requireRole("teacher"), async (req, res, next) => {
+  try {
+    const payload = groupSchema.parse(req.body);
+    const group = await get(
+      `
+        SELECT id
+        FROM groups
+        WHERE id = ? AND teacher_id = ?
+        LIMIT 1
+      `,
+      [req.params.groupId, req.user.id],
+    );
+
+    if (!group) {
+      sendAuthError(res, 404, "Group not found.", "group_not_found");
+      return;
+    }
+
+    const connectedStudents = await listTeacherStudentsDetailed(req.user.id);
+    const connectedIds = new Set(connectedStudents.map((student) => student.id));
+
+    if (payload.studentIds.some((studentId) => !connectedIds.has(studentId))) {
+      sendAuthError(res, 400, "Groups can include only connected students.", "invalid_group_members");
+      return;
+    }
+
+    const timestamp = new Date().toISOString();
+
+    await run(
+      `
+        UPDATE groups
+        SET name = ?, description = ?, updated_at = ?
+        WHERE id = ?
+      `,
+      [payload.name, payload.description || "", timestamp, req.params.groupId],
+    );
+
+    await run(`DELETE FROM group_memberships WHERE group_id = ?`, [req.params.groupId]);
+
+    for (const studentId of [...new Set(payload.studentIds)]) {
+      await run(
+        `
+          INSERT INTO group_memberships (group_id, student_id, created_at)
+          VALUES (?, ?, ?)
+        `,
+        [req.params.groupId, studentId, timestamp],
+      );
+    }
+
+    await syncGroupConversation(req.params.groupId, req.user.id);
+    res.json({ groups: await getTeacherGroupsDetailed(req.user.id) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/groups/:groupId", requireSession, requireRole("teacher"), async (req, res, next) => {
+  try {
+    await run(`DELETE FROM groups WHERE id = ? AND teacher_id = ?`, [req.params.groupId, req.user.id]);
+    res.json({ groups: await getTeacherGroupsDetailed(req.user.id) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/groups/:groupId/homework", requireSession, requireRole("teacher"), async (req, res, next) => {
+  try {
+    const payload = groupHomeworkSchema.parse(req.body);
+    const group = await get(
+      `
+        SELECT id, name
+        FROM groups
+        WHERE id = ? AND teacher_id = ?
+        LIMIT 1
+      `,
+      [req.params.groupId, req.user.id],
+    );
+
+    if (!group) {
+      sendAuthError(res, 404, "Group not found.", "group_not_found");
+      return;
+    }
+
+    const assignmentId = crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+    const dueDate = normalizeDateValue(payload.dueDate);
+    const members = await all(`SELECT student_id FROM group_memberships WHERE group_id = ?`, [req.params.groupId]);
+
+    await run(
+      `
+        INSERT INTO homework_assignments (
+          id, teacher_id, student_id, group_id, title, description, due_date, status, created_at, updated_at
+        ) VALUES (?, ?, NULL, ?, ?, ?, ?, 'assigned', ?, ?)
+      `,
+      [assignmentId, req.user.id, req.params.groupId, payload.title, payload.description, dueDate, timestamp, timestamp],
+    );
+
+    await Promise.all(
+      members.map((member) =>
+        createNotification(member.student_id, {
+          type: "group_homework_assigned",
+          title: `New group homework: ${group.name}`,
+          body: payload.title,
+          link: "/groups",
+          meta: {
+            assignmentId,
+            groupId: req.params.groupId,
+          },
+        }),
+      ),
+    );
+
+    res.status(201).json({ groups: await getTeacherGroupsDetailed(req.user.id) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/groups/:groupId/conversation", requireSession, requireRole("teacher"), async (req, res, next) => {
+  try {
+    const group = await get(
+      `
+        SELECT id
+        FROM groups
+        WHERE id = ? AND teacher_id = ?
+        LIMIT 1
+      `,
+      [req.params.groupId, req.user.id],
+    );
+
+    if (!group) {
+      sendAuthError(res, 404, "Group not found.", "group_not_found");
+      return;
+    }
+
+    const conversationId = await syncGroupConversation(req.params.groupId, req.user.id);
+    res.status(201).json(await getConversationResponse(conversationId, req.user.id));
   } catch (error) {
     next(error);
   }
@@ -2334,7 +3258,7 @@ app.get("/api/notifications", requireSession, async (req, res, next) => {
           )
         : all(
                           `
-              SELECT req.id, req.created_at, student.id as student_id, student.full_name, student.email
+              SELECT req.id, req.created_at, student.id as student_id, student.full_name, student.username, student.email
               FROM teacher_student_requests req
               INNER JOIN users student ON student.id = req.student_id
               WHERE req.teacher_id = ? AND req.status = 'pending'
@@ -2372,6 +3296,7 @@ app.get("/api/notifications", requireSession, async (req, res, next) => {
               id: item.id,
               studentId: item.student_id,
               studentName: item.full_name,
+              studentUsername: item.username || "",
               studentEmail: item.email,
               createdAt: item.created_at,
             }))
@@ -2402,17 +3327,18 @@ app.post("/api/notifications/read-all", requireSession, async (req, res, next) =
 app.post("/api/student-requests", requireSession, requireRole("teacher"), async (req, res, next) => {
   try {
     const payload = studentInviteSchema.parse(req.body);
+    const studentUsername = normalizeUsername(payload.studentUsername);
     const student = await get(
       `
         SELECT *
         FROM users
-        WHERE email = ? AND role = 'student' AND status = 'active'
+        WHERE username = ? AND role = 'student' AND status = 'active'
       `,
-      [payload.studentEmail.trim().toLowerCase()],
+      [studentUsername],
     );
 
     if (!student) {
-      sendAuthError(res, 404, "Студент с таким email не найден.", "student_not_found");
+      sendAuthError(res, 404, "Студент с таким username не найден.", "student_not_found");
       return;
     }
 
@@ -2594,77 +3520,7 @@ app.get("/api/conversations/unread-summary", requireSession, async (req, res, ne
 });
 app.get("/api/conversations", requireSession, async (req, res, next) => {
   try {
-    const conversations = await all(
-      `
-        SELECT
-          c.id,
-          c.created_at,
-          c.updated_at,
-          partner.id AS partner_id,
-          partner.full_name AS partner_name,
-          partner.email AS partner_email,
-          partner.role AS partner_role,
-          partner.subject AS partner_subject,
-          (
-            SELECT content
-            FROM messages m
-            WHERE m.conversation_id = c.id
-            ORDER BY m.created_at DESC
-            LIMIT 1
-          ) AS last_message,
-          (
-            SELECT created_at
-            FROM messages m
-            WHERE m.conversation_id = c.id
-            ORDER BY m.created_at DESC
-            LIMIT 1
-          ) AS last_message_at,
-          CASE
-            WHEN (
-              SELECT sender_id
-              FROM messages m
-              WHERE m.conversation_id = c.id
-              ORDER BY m.created_at DESC
-              LIMIT 1
-            ) = ? THEN 0
-            WHEN self_member.last_read_at IS NULL THEN 1
-            WHEN (
-              SELECT created_at
-              FROM messages m
-              WHERE m.conversation_id = c.id
-              ORDER BY m.created_at DESC
-              LIMIT 1
-            ) > self_member.last_read_at THEN 1
-            ELSE 0
-          END AS is_unread
-        FROM conversations c
-        INNER JOIN conversation_members self_member
-          ON self_member.conversation_id = c.id AND self_member.user_id = ?
-        INNER JOIN conversation_members partner_member
-          ON partner_member.conversation_id = c.id AND partner_member.user_id != ?
-        INNER JOIN users partner ON partner.id = partner_member.user_id
-        ORDER BY COALESCE(last_message_at, c.updated_at) DESC
-      `,
-      [req.user.id, req.user.id, req.user.id],
-    );
-
-    res.json({
-      conversations: conversations.map((item) => ({
-        id: item.id,
-        createdAt: item.created_at,
-        updatedAt: item.updated_at,
-        lastMessage: item.last_message || "",
-        lastMessageAt: item.last_message_at || item.updated_at,
-        isUnread: Boolean(item.is_unread),
-        participant: {
-          id: item.partner_id,
-          fullName: item.partner_name,
-          email: item.partner_email,
-          role: item.partner_role,
-          subject: item.partner_subject || "",
-        },
-      })),
-    });
+    res.json({ conversations: await listConversationsForUser(req.user.id) });
   } catch (error) {
     next(error);
   }
@@ -2681,7 +3537,7 @@ app.post("/api/conversations", requireSession, async (req, res, next) => {
 
     const participant = await get(
       `
-        SELECT id, full_name, email, role, subject
+        SELECT id, full_name, username, email, role, subject
         FROM users
         WHERE id = ?
       `,
@@ -2726,6 +3582,7 @@ app.post("/api/conversations", requireSession, async (req, res, next) => {
         participant: {
           id: participant.id,
           fullName: participant.full_name,
+          username: participant.username || "",
           email: participant.email,
           role: participant.role,
           subject: participant.subject || "",
@@ -2739,62 +3596,13 @@ app.post("/api/conversations", requireSession, async (req, res, next) => {
 
 app.get("/api/conversations/:id", requireSession, async (req, res, next) => {
   try {
-    const conversation = await requireConversationMember(req.params.id, req.user.id);
+    const data = await getConversationResponse(req.params.id, req.user.id);
 
-    if (!conversation) {
+    if (!data) {
       sendAuthError(res, 404, "Conversation not found.", "conversation_not_found");
       return;
     }
-
-    await updateConversationReadState(req.params.id, req.user.id);
-
-    const [participant, messages] = await Promise.all([
-      get(
-        `
-          SELECT u.id, u.full_name, u.email, u.role, u.subject
-          FROM conversation_members cm
-          INNER JOIN users u ON u.id = cm.user_id
-          WHERE cm.conversation_id = ? AND cm.user_id != ?
-          LIMIT 1
-        `,
-        [req.params.id, req.user.id],
-      ),
-      all(
-        `
-          SELECT m.id, m.content, m.created_at, m.sender_id, sender.full_name AS sender_name
-          FROM messages m
-          INNER JOIN users sender ON sender.id = m.sender_id
-          WHERE m.conversation_id = ?
-          ORDER BY m.created_at ASC
-        `,
-        [req.params.id],
-      ),
-    ]);
-
-    res.json({
-      conversation: {
-        id: conversation.id,
-        createdAt: conversation.created_at,
-        updatedAt: conversation.updated_at,
-        participant: participant
-          ? {
-              id: participant.id,
-              fullName: participant.full_name,
-              email: participant.email,
-              role: participant.role,
-              subject: participant.subject || "",
-            }
-          : null,
-      },
-      messages: messages.map((item) => ({
-        id: item.id,
-        content: item.content,
-        createdAt: item.created_at,
-        senderId: item.sender_id,
-        senderName: item.sender_name,
-        isOwn: item.sender_id === req.user.id,
-      })),
-    });
+    res.json(data);
   } catch (error) {
     next(error);
   }
@@ -2812,13 +3620,12 @@ app.post("/api/conversations/:id/messages", requireSession, async (req, res, nex
 
     const timestamp = new Date().toISOString();
     const messageId = crypto.randomUUID();
-    const recipient = await get(
+    const recipients = await all(
       `
         SELECT u.id, u.full_name
         FROM conversation_members cm
         INNER JOIN users u ON u.id = cm.user_id
         WHERE cm.conversation_id = ? AND cm.user_id != ?
-        LIMIT 1
       `,
       [req.params.id, req.user.id],
     );
@@ -2840,20 +3647,22 @@ app.post("/api/conversations/:id/messages", requireSession, async (req, res, nex
       [timestamp, req.params.id],
     );
 
-    if (recipient) {
-      await createNotification(recipient.id, {
-        type: "incoming_message",
-        title: `New message from ${req.user.fullName}`,
-        body: payload.content.slice(0, 240),
-        link: `/messages?userId=${encodeURIComponent(req.user.id)}`,
-        meta: {
-          conversationId: req.params.id,
-          messageId,
-          senderId: req.user.id,
-          senderName: req.user.fullName,
-        },
-      });
-    }
+    await Promise.all(
+      recipients.map((recipient) =>
+        createNotification(recipient.id, {
+          type: "incoming_message",
+          title: `New message from ${req.user.fullName}`,
+          body: payload.content.slice(0, 240),
+          link: `/messages?conversationId=${encodeURIComponent(req.params.id)}`,
+          meta: {
+            conversationId: req.params.id,
+            messageId,
+            senderId: req.user.id,
+            senderName: req.user.fullName,
+          },
+        }),
+      ),
+    );
 
     res.status(201).json({
       message: {

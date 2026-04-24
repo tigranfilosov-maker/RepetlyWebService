@@ -117,7 +117,7 @@ export function NotificationsPage() {
                   <article key={request.id} className="notification-card">
                     <div>
                       <strong>{request.studentName}</strong>
-                      <span>{request.studentEmail}</span>
+                      <span>{request.studentUsername ? `@${request.studentUsername}` : request.studentEmail}</span>
                       <small>{formatDate(request.createdAt)}</small>
                     </div>
                     <span className="profile-badge">Ожидание</span>

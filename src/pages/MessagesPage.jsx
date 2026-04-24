@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "../components/AppLayout";
 import { authRequest, useAuth } from "../auth/AuthContext";
 
-const chatTimeFormatter = new Intl.DateTimeFormat("ru-RU", {
+const chatTimeFormatter = new Intl.DateTimeFormat("en-US", {
   hour: "2-digit",
   minute: "2-digit",
 });
@@ -53,8 +53,8 @@ export function MessagesPage() {
 
   async function loadConversationList() {
     const data = await authRequest("/api/conversations");
-    setConversations(data.conversations);
-    return data.conversations;
+    setConversations(data.conversations || []);
+    return data.conversations || [];
   }
 
   async function loadConversation(conversationId) {
@@ -72,18 +72,25 @@ export function MessagesPage() {
 
     await loadConversationList();
     setActiveConversationId(response.conversation.id);
-    setSearchParams({ userId: participantId });
+    setSearchParams({ userId: participantId, conversationId: response.conversation.id });
   }
 
   useEffect(() => {
     loadConversationList()
       .then((items) => {
+        const requestedConversationId = searchParams.get("conversationId");
         const participantId = searchParams.get("userId");
 
+        if (requestedConversationId && items.some((item) => item.id === requestedConversationId)) {
+          setActiveConversationId(requestedConversationId);
+          return;
+        }
+
         if (participantId) {
-          const existing = items.find((item) => item.participant.id === participantId);
+          const existing = items.find((item) => item.type === "direct" && item.participant?.id === participantId);
           if (existing) {
             setActiveConversationId(existing.id);
+            setSearchParams({ userId: participantId, conversationId: existing.id });
           } else {
             openConversationByUserId(participantId).catch(() => {});
           }
@@ -92,6 +99,7 @@ export function MessagesPage() {
 
         if (items[0]) {
           setActiveConversationId(items[0].id);
+          setSearchParams({ conversationId: items[0].id });
         }
       })
       .catch(() => {});
@@ -154,28 +162,43 @@ export function MessagesPage() {
     }
   }
 
-  const participantSubtitle = activeConversation?.participant?.subject
-    || (activeConversation?.participant?.role === "teacher" ? "Преподаватель" : "Ученик");
+  const conversationTitle =
+    activeConversation?.type === "group"
+      ? activeConversation.title
+      : activeConversation?.participant?.fullName;
+  const conversationSubtitle =
+    activeConversation?.type === "group"
+      ? `${activeConversation.members?.length || 0} participants`
+      : activeConversation?.participant?.subject
+        || (activeConversation?.participant?.role === "teacher" ? "Teacher" : "Student");
 
   return (
-    <AppLayout title="Сообщения" eyebrow="Мессенджер" contentMode="custom">
+    <AppLayout title="Сообщения" contentMode="custom">
       <section className="messages-layout messages-layout--swapped messages-layout--locked">
         <article className="panel chat-panel">
           {activeConversation ? (
             <>
               <div className="chat-panel__header">
                 <div>
-                  <h2>{activeConversation.participant?.fullName}</h2>
-                  {participantSubtitle ? <p>{participantSubtitle}</p> : null}
+                  <h2>{conversationTitle}</h2>
+                  {conversationSubtitle ? <p>{conversationSubtitle}</p> : null}
                 </div>
               </div>
 
+              {activeConversation.type === "group" ? (
+                <div className="chat-members-inline">
+                  {activeConversation.members?.map((member) => (
+                    <span key={member.id} className="chat-members-inline__item">
+                      {member.fullName}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+
               <div ref={threadRef} className="chat-thread">
                 {messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`chat-bubble${message.isOwn ? " chat-bubble--own" : ""}`}
-                  >
+                  <div key={message.id} className={`chat-bubble${message.isOwn ? " chat-bubble--own" : ""}`}>
+                    {activeConversation.type === "group" && !message.isOwn ? <strong className="chat-bubble__sender">{message.senderName}</strong> : null}
                     <p>{message.content}</p>
                     <div className="chat-bubble__meta">
                       <time dateTime={message.createdAt}>{formatChatTime(message.createdAt)}</time>
@@ -189,17 +212,17 @@ export function MessagesPage() {
                   className="auth-input"
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
-                  placeholder="Введите сообщение..."
+                  placeholder={activeConversation.type === "group" ? "Message the whole group..." : "Type a message..."}
                 />
                 <button className="auth-submit" type="submit" disabled={isSending}>
-                  {isSending ? "Отправка..." : "Отправить"}
+                  {isSending ? "Sending..." : "Send"}
                 </button>
               </form>
             </>
           ) : (
             <div className="messages-empty">
-              <h2>Диалог не выбран</h2>
-              <p>Выберите чат слева или откройте его из карточки пользователя.</p>
+              <h2>No conversation selected</h2>
+              <p>Open a student card or a group card to jump into the right chat.</p>
             </div>
           )}
         </article>
@@ -207,8 +230,8 @@ export function MessagesPage() {
         <article className="panel messages-panel">
           <div className="panel__head panel__head--tight">
             <div>
-              <h2>Диалоги</h2>
-              <p>Общайтесь с подключёнными {user?.role === "teacher" ? "учениками" : "преподавателями"}.</p>
+              <h2>Dialogs</h2>
+              <p>Direct and group conversations appear together in one list.</p>
             </div>
           </div>
 
@@ -217,35 +240,42 @@ export function MessagesPage() {
               <button
                 key={conversation.id}
                 type="button"
-                className={`conversation-list__item${
-                  conversation.id === activeConversationId ? " conversation-list__item--active" : ""
-                }`}
+                className={`conversation-list__item${conversation.id === activeConversationId ? " conversation-list__item--active" : ""}`}
                 onClick={() => {
                   setActiveConversationId(conversation.id);
-                  setSearchParams({ userId: conversation.participant.id });
+                  setSearchParams(
+                    conversation.type === "group"
+                      ? { conversationId: conversation.id }
+                      : { conversationId: conversation.id, userId: conversation.participant.id },
+                  );
                 }}
               >
                 <div className="conversation-list__avatar">
-                  {conversation.participant.fullName
-                    .split(/\s+/)
-                    .filter(Boolean)
-                    .slice(0, 2)
-                    .map((part) => part[0]?.toUpperCase())
-                    .join("")}
+                  {conversation.type === "group"
+                    ? "GR"
+                    : conversation.participant?.fullName
+                      ?.split(/\s+/)
+                      .filter(Boolean)
+                      .slice(0, 2)
+                      .map((part) => part[0]?.toUpperCase())
+                      .join("")}
                 </div>
                 <div>
-                  <strong>{conversation.participant.fullName}</strong>
-                  <span>{conversation.participant.subject || conversation.participant.email}</span>
-                  <small>{conversation.lastMessage || "Начните диалог"}</small>
+                  <strong>{conversation.type === "group" ? conversation.title : conversation.participant?.fullName}</strong>
+                  <span>
+                    {conversation.type === "group"
+                      ? `${conversation.memberCount} members`
+                      : conversation.participant?.subject
+                        || (conversation.participant?.username
+                          ? `@${conversation.participant.username}`
+                          : conversation.participant?.email)}
+                  </span>
+                  <small>{conversation.lastMessage || "Start the conversation"}</small>
                 </div>
                 {conversation.isUnread ? <span className="conversation-list__unread" /> : null}
               </button>
             ))}
-            {!conversations.length ? (
-              <div className="empty-state">
-                Используйте кнопку «Сообщение» в карточке пользователя, чтобы начать чат.
-              </div>
-            ) : null}
+            {!conversations.length ? <div className="empty-state">Use Message on a student card or open a group chat to start.</div> : null}
           </div>
         </article>
       </section>

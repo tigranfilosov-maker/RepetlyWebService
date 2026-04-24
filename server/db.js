@@ -52,6 +52,54 @@ function all(sql, params = []) {
   });
 }
 
+function normalizeUsernameCandidate(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "")
+    .replace(/[^a-z0-9_]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+async function ensureUsernamesForExistingUsers() {
+  const users = await all(`
+    SELECT id, username, email, full_name
+    FROM users
+    ORDER BY created_at ASC, id ASC
+  `);
+
+  const reserved = new Set(
+    users
+      .map((user) => normalizeUsernameCandidate(user.username))
+      .filter(Boolean),
+  );
+
+  for (const user of users) {
+    if (normalizeUsernameCandidate(user.username)) {
+      continue;
+    }
+
+    const emailLocalPart = String(user.email || "").split("@")[0] || "";
+    const base =
+      normalizeUsernameCandidate(emailLocalPart) ||
+      normalizeUsernameCandidate(user.full_name) ||
+      `user_${String(user.id || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 8).toLowerCase()}` ||
+      "user";
+
+    let candidate = base;
+    let suffix = 1;
+
+    while (!candidate || reserved.has(candidate)) {
+      suffix += 1;
+      candidate = `${base}_${suffix}`;
+    }
+
+    await run(`UPDATE users SET username = ?, updated_at = datetime('now') WHERE id = ?`, [candidate, user.id]);
+    reserved.add(candidate);
+  }
+}
+
 async function ensureColumn(tableName, columnName, sqlDefinition) {
   const columns = await all(`PRAGMA table_info(${tableName})`);
   const hasColumn = columns.some((column) => column.name === columnName);
@@ -69,6 +117,7 @@ export async function initializeDatabase() {
       id TEXT PRIMARY KEY,
       full_name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
+      username TEXT,
       phone_number TEXT,
       avatar_url TEXT,
       role TEXT NOT NULL DEFAULT 'teacher',
@@ -80,10 +129,12 @@ export async function initializeDatabase() {
     )
   `);
 
+  await ensureColumn("users", "username", "username TEXT");
   await ensureColumn("users", "subject", "subject TEXT");
   await ensureColumn("users", "subscription_plan", "subscription_plan TEXT NOT NULL DEFAULT 'free'");
   await ensureColumn("users", "plan_started_at", "plan_started_at TEXT");
   await run(`UPDATE users SET subscription_plan = 'free' WHERE subscription_plan IS NULL OR TRIM(subscription_plan) = ''`);
+  await ensureUsernamesForExistingUsers();
 
   await run(`
     CREATE TABLE IF NOT EXISTS auth_identities (
@@ -191,6 +242,9 @@ export async function initializeDatabase() {
       updated_at TEXT NOT NULL
     )
   `);
+  await ensureColumn("conversations", "type", "type TEXT NOT NULL DEFAULT 'direct'");
+  await ensureColumn("conversations", "title", "title TEXT");
+  await ensureColumn("conversations", "group_id", "group_id TEXT");
 
   await run(`
     CREATE TABLE IF NOT EXISTS conversation_members (
@@ -237,6 +291,19 @@ export async function initializeDatabase() {
       notification_preference TEXT NOT NULL DEFAULT 'all',
       privacy_mode TEXT NOT NULL DEFAULT 'standard',
       updated_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS dashboard_widgets (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      slot_key TEXT NOT NULL,
+      widget_type TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, slot_key),
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
@@ -366,8 +433,54 @@ export async function initializeDatabase() {
   `);
 
   await run(`
+    CREATE TABLE IF NOT EXISTS groups (
+      id TEXT PRIMARY KEY,
+      teacher_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(teacher_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS group_memberships (
+      group_id TEXT NOT NULL,
+      student_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (group_id, student_id),
+      FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE,
+      FOREIGN KEY(student_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS homework_assignments (
+      id TEXT PRIMARY KEY,
+      teacher_id TEXT NOT NULL,
+      student_id TEXT,
+      group_id TEXT,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      due_date TEXT,
+      status TEXT NOT NULL DEFAULT 'assigned',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(teacher_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY(student_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
     CREATE INDEX IF NOT EXISTS idx_conversation_members_user
     ON conversation_members (user_id)
+  `);
+
+  await run(`
+    CREATE INDEX IF NOT EXISTS idx_conversations_type_group
+    ON conversations (type, group_id, updated_at DESC)
   `);
 
   await run(`
@@ -396,6 +509,17 @@ export async function initializeDatabase() {
   `);
 
   await run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_unique
+    ON users (username)
+    WHERE username IS NOT NULL
+  `);
+
+  await run(`
+    CREATE INDEX IF NOT EXISTS idx_dashboard_widgets_user
+    ON dashboard_widgets (user_id, updated_at DESC)
+  `);
+
+  await run(`
     CREATE INDEX IF NOT EXISTS idx_relationship_subjects_relationship
     ON relationship_subjects (relationship_id)
   `);
@@ -408,6 +532,31 @@ export async function initializeDatabase() {
   await run(`
     CREATE INDEX IF NOT EXISTS idx_boards_student
     ON boards (student_id)
+  `);
+
+  await run(`
+    CREATE INDEX IF NOT EXISTS idx_groups_teacher_updated
+    ON groups (teacher_id, updated_at DESC)
+  `);
+
+  await run(`
+    CREATE INDEX IF NOT EXISTS idx_group_memberships_student
+    ON group_memberships (student_id)
+  `);
+
+  await run(`
+    CREATE INDEX IF NOT EXISTS idx_homework_assignments_teacher_updated
+    ON homework_assignments (teacher_id, updated_at DESC)
+  `);
+
+  await run(`
+    CREATE INDEX IF NOT EXISTS idx_homework_assignments_student
+    ON homework_assignments (student_id, due_date)
+  `);
+
+  await run(`
+    CREATE INDEX IF NOT EXISTS idx_homework_assignments_group
+    ON homework_assignments (group_id, due_date)
   `);
 
   await run(`

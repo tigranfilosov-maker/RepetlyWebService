@@ -1,6 +1,7 @@
 import { AdminPage } from "./pages/AdminPage";
 import { AnalyticsHubPage } from "./pages/AnalyticsHubPage";
 import { GetStudentsPage } from "./pages/GetStudentsPage";
+import { GroupsPage } from "./pages/GroupsPage";
 import { HomePage } from "./pages/HomePage";
 import { LessonsPage } from "./pages/LessonsPage";
 import { MessagesPage } from "./pages/MessagesPage";
@@ -16,6 +17,7 @@ const routeElements = {
   "/admin": <AdminPage />,
   "/app": <HomePage />,
   "/students": <StudentsPage />,
+  "/groups": <GroupsPage />,
   "/teachers": <TeachersPage />,
   "/schedule": <SchedulePage />,
   "/messages": <MessagesPage />,

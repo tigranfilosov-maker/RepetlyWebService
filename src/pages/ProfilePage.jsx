@@ -98,6 +98,7 @@ export function ProfilePage() {
   const currentPlan = normalizePlanId(user?.subscriptionPlan);
   const [formState, setFormState] = useState({
     fullName: user?.fullName || "",
+    username: user?.username || "",
     email: user?.email || "",
     phoneNumber: user?.phoneNumber || "",
     avatar: user?.avatar || "",
@@ -119,6 +120,7 @@ export function ProfilePage() {
   useEffect(() => {
     setFormState({
       fullName: user?.fullName || "",
+      username: user?.username || "",
       email: user?.email || "",
       phoneNumber: user?.phoneNumber || "",
       avatar: user?.avatar || "",
@@ -296,6 +298,7 @@ export function ProfilePage() {
       const updatedUser = await updateProfile(formState);
       setFormState({
         fullName: updatedUser.fullName || "",
+        username: updatedUser.username || "",
         email: updatedUser.email || "",
         phoneNumber: updatedUser.phoneNumber || "",
         avatar: updatedUser.avatar || "",
@@ -339,7 +342,7 @@ export function ProfilePage() {
 
               <div className="profile-summary__meta">
                 <h2>{user?.fullName}</h2>
-                <p>{user?.email}</p>
+                <p>{user?.username ? `@${user.username}` : user?.email}</p>
               </div>
 
               <div className="profile-badges">
@@ -394,6 +397,18 @@ export function ProfilePage() {
                     value={formState.email}
                     onChange={(event) =>
                       setFormState((current) => ({ ...current, email: event.target.value }))
+                    }
+                  />
+                </label>
+
+                <label className="auth-field" htmlFor="profile-username">
+                  <span>Никнейм</span>
+                  <input
+                    className="auth-input"
+                    id="profile-username"
+                    value={formState.username}
+                    onChange={(event) =>
+                      setFormState((current) => ({ ...current, username: event.target.value }))
                     }
                   />
                 </label>

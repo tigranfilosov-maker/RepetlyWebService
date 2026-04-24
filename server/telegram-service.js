@@ -1,10 +1,11 @@
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import https from "node:https";
+import { domainToUnicode } from "node:url";
 import { promisify } from "node:util";
 import { config } from "./config.js";
 import { all, get, run } from "./db.js";
-import { upsertSocialUser } from "./auth-service.js";
+import { ensureUniqueUsername, findIdentity, getUserById, normalizeUsername, upsertSocialUser } from "./auth-service.js";
 
 const DEFAULT_REMINDER_OFFSETS = Object.freeze([1440, 60, 15]);
 const LINK_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -93,10 +94,17 @@ function buildAppUrl(pathname = "") {
   const base = new URL(config.clientUrl);
 
   if (!pathname) {
-    return base.toString();
+    return formatDisplayUrl(base);
   }
 
-  return new URL(pathname, base).toString();
+  return formatDisplayUrl(new URL(pathname, base));
+}
+
+function formatDisplayUrl(url) {
+  const normalized = url instanceof URL ? new URL(url.toString()) : new URL(String(url || ""));
+  const href = normalized.toString();
+  const unicodeHostname = domainToUnicode(normalized.hostname);
+  return unicodeHostname ? href.replace(normalized.hostname, unicodeHostname) : href;
 }
 
 function safeTimingCompare(left, right) {
@@ -360,6 +368,25 @@ async function getTelegramAuthRequestByCredential(credential) {
   );
 }
 
+async function getTelegramPendingAuthRequest({ telegramUserId, telegramChatId }) {
+  await cleanupExpiredTelegramAuthRequests();
+
+  return get(
+    `
+      SELECT *
+      FROM telegram_auth_requests
+      WHERE status IN ('pending', 'awaiting_contact')
+        AND (
+          (? != '' AND telegram_user_id = ?)
+          OR (? != '' AND telegram_chat_id = ?)
+        )
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [telegramUserId || "", telegramUserId || "", telegramChatId || "", telegramChatId || ""],
+  );
+}
+
 function mapTelegramAuthRequest(record) {
   if (!record) {
     return null;
@@ -599,14 +626,12 @@ function buildLinkPromptText() {
   return [
     "Telegram is not linked yet.",
     "To link an existing website account: open Repetly settings, start Telegram confirmation, then paste the one-time code here.",
-    "To register through this bot: use /register_teacher or /register_student.",
+    "To register through Telegram: start registration from the website and then continue here in the bot.",
   ].join("\n\n");
 }
 
 function buildBotHelpText(isLinked) {
   const commands = [
-    "/register_teacher - create a teacher account and link this Telegram",
-    "/register_student - create a student account and link this Telegram",
     "/link - help with linking an existing account",
     "/nextlesson - show the nearest lesson",
     "/schedule - show upcoming lessons",
@@ -620,6 +645,29 @@ function buildBotHelpText(isLinked) {
     "Commands:",
     ...commands,
   ].join("\n");
+}
+
+function buildTelegramContactRequestText(role) {
+  return [
+    `Для продолжения регистрации как ${role === "student" ? "ученик" : "преподаватель"} отправьте свой контакт из Telegram.`,
+    "Номер телефона сохранится в профиль Repetly автоматически.",
+  ].join("\n\n");
+}
+
+async function requestTelegramContact(chatId, role) {
+  return sendTelegramApiRequest("sendMessage", {
+    chat_id: chatId,
+    text: buildTelegramContactRequestText(role),
+    reply_markup: {
+      keyboard: [[{ text: "Поделиться контактом", request_contact: true }]],
+      resize_keyboard: true,
+      one_time_keyboard: true,
+    },
+  });
+}
+
+function buildTelegramUsernameCandidate(telegramUsername, telegramUserId) {
+  return normalizeUsername(telegramUsername) || `tg${String(telegramUserId || "").replace(/\D/g, "") || "user"}`;
 }
 
 export function isTelegramConfigured() {
@@ -1217,6 +1265,7 @@ async function registerTelegramUserAccount({
   telegramUsername,
   firstName,
   lastName,
+  phoneNumber = "",
   role,
 }) {
   const existingLinkedRecord = await get(
@@ -1242,11 +1291,18 @@ async function registerTelegramUserAccount({
 
   const fullName = [firstName, lastName].filter(Boolean).join(" ").trim();
   const usernameLabel = telegramUsername ? `@${telegramUsername}` : "";
+  const existingTelegramIdentity = await findIdentity("telegram", String(telegramUserId));
+  const resolvedUsername = await ensureUniqueUsername(
+    buildTelegramUsernameCandidate(telegramUsername, telegramUserId),
+    `tg${telegramUserId}`,
+  );
   const user = await upsertSocialUser({
     provider: "telegram",
     providerUserId: telegramUserId,
     email: `${telegramUserId}@telegram.local`,
     fullName: fullName || usernameLabel || `Telegram ${telegramUserId}`,
+    username: existingTelegramIdentity?.username || resolvedUsername,
+    phoneNumber,
     role,
   });
   const timestamp = nowIso();
@@ -1302,7 +1358,7 @@ async function approveTelegramAuthRequest({
   if (!record) {
     return {
       success: false,
-      message: "Запрос на вход истек или не найден. Вернитесь на сайт и начните вход заново.",
+      message: "Запрос на вход не найден или уже истёк. Начните вход на сайте заново.",
     };
   }
 
@@ -1311,7 +1367,7 @@ async function approveTelegramAuthRequest({
   if (mapped.status === "expired") {
     return {
       success: false,
-      message: "Запрос на вход истек. Вернитесь на сайт и начните вход заново.",
+      message: "Время подтверждения истекло. Начните вход на сайте заново.",
     };
   }
 
@@ -1320,38 +1376,53 @@ async function approveTelegramAuthRequest({
       success: true,
       userId: mapped.userId,
       alreadyCompleted: true,
-      message: "Вход уже подтвержден. Вернитесь в браузер с сайтом.",
+      message: "Вход уже подтверждён. Возвращайтесь в браузер к сайту.",
     };
   }
 
   let resolvedUserId = record.user_id || "";
-  let responseMessage = "Вход подтвержден. Вернитесь в браузер с сайтом.";
+  let responseMessage = "Вход подтверждён. Возвращайтесь в браузер к сайту.";
 
   if (record.mode === "signup") {
-    const registration = await registerTelegramUserAccount({
-      telegramUserId,
-      telegramChatId,
-      telegramUsername,
-      firstName,
-      lastName,
-      role: record.role,
-    });
-    resolvedUserId = registration.userId;
-    responseMessage = registration.alreadyRegistered
-      ? "Телеграм уже привязан. Вход подтвержден, вернитесь в браузер с сайтом."
-      : "Аккаунт создан и вход подтвержден. Вернитесь в браузер с сайтом.";
-  } else {
-    const connection = await getConnectionByTelegramIdentity({ telegramUserId, telegramChatId });
+    const existingIdentity = await findIdentity("telegram", String(telegramUserId));
+    const existingConnection = await getConnectionByTelegramIdentity({ telegramUserId, telegramChatId });
 
-    if (!connection?.user_id) {
+    if (existingIdentity?.user_id || existingConnection?.user_id) {
+      resolvedUserId = existingIdentity?.user_id || existingConnection?.user_id || "";
+      responseMessage = "Telegram уже привязан к аккаунту. Вход подтверждён, возвращайтесь в браузер.";
+    } else {
+      await run(
+        `
+          UPDATE telegram_auth_requests
+          SET status = 'awaiting_contact',
+              telegram_user_id = ?,
+              telegram_chat_id = ?,
+              telegram_username = ?,
+              error_code = 'awaiting_contact'
+          WHERE id = ?
+        `,
+        [telegramUserId || null, telegramChatId || null, telegramUsername || null, record.id],
+      );
+
       return {
         success: false,
-        message:
-          "Этот Telegram еще не привязан к аккаунту Repetly. Сначала привяжите его в настройках или используйте регистрацию через Telegram.",
+        requiresContact: true,
+        role: record.role,
+        message: buildTelegramContactRequestText(record.role),
+      };
+    }
+  } else {
+    const identity = await findIdentity("telegram", String(telegramUserId));
+    const connection = await getConnectionByTelegramIdentity({ telegramUserId, telegramChatId });
+
+    if (!connection?.user_id && !identity?.user_id) {
+      return {
+        success: false,
+        message: "Этот Telegram не связан с аккаунтом Repetly. Сначала привяжите его в настройках или используйте регистрацию через Telegram.",
       };
     }
 
-    resolvedUserId = connection.user_id;
+    resolvedUserId = connection?.user_id || identity?.user_id || "";
   }
 
   await run(
@@ -1376,24 +1447,96 @@ async function approveTelegramAuthRequest({
   };
 }
 
+async function completeTelegramSignupContact({
+  telegramUserId,
+  telegramChatId,
+  telegramUsername,
+  firstName,
+  lastName,
+  phoneNumber,
+}) {
+  const record = await getTelegramPendingAuthRequest({ telegramUserId, telegramChatId });
+
+  if (!record || record.mode !== 'signup') {
+    return {
+      success: false,
+      message: "Активный запрос на регистрацию не найден. Начните регистрацию на сайте заново.",
+    };
+  }
+
+  const registration = await registerTelegramUserAccount({
+    telegramUserId,
+    telegramChatId,
+    telegramUsername,
+    firstName,
+    lastName,
+    phoneNumber,
+    role: record.role,
+  });
+
+  await run(
+    `
+      UPDATE telegram_auth_requests
+      SET user_id = ?,
+          status = 'approved',
+          approved_at = ?,
+          telegram_user_id = ?,
+          telegram_chat_id = ?,
+          telegram_username = ?,
+          error_code = NULL
+      WHERE id = ?
+    `,
+    [registration.userId, nowIso(), telegramUserId || null, telegramChatId || null, telegramUsername || null, record.id],
+  );
+
+  return {
+    success: true,
+    userId: registration.userId,
+    fullName: registration.fullName,
+    message: registration.alreadyRegistered
+      ? "Telegram уже был связан. Вход подтверждён, возвращайтесь в браузер."
+      : "Контакт получен, профиль создан и вход подтверждён. Возвращайтесь в браузер.",
+  };
+}
+
 export async function handleTelegramWebhookUpdate(update) {
   const message = update?.message;
 
-  if (!message || message.chat?.type !== "private" || typeof message.text !== "string") {
+  if (!message || message.chat?.type !== "private") {
     return { processed: false };
   }
 
-  const text = message.text.trim();
+  const text = typeof message.text === "string" ? message.text.trim() : "";
+  const contact = message.contact || null;
   const telegramUserId = String(message.from?.id || "");
   const telegramChatId = String(message.chat?.id || "");
   const telegramUsername = message.from?.username || "";
-  const firstName = message.from?.first_name || "";
-  const lastName = message.from?.last_name || "";
+  const firstName = message.from?.first_name || contact?.first_name || "";
+  const lastName = message.from?.last_name || contact?.last_name || "";
   const linkedConnection = await touchTelegramIdentity({
     telegramUserId,
     telegramChatId,
     telegramUsername,
   });
+
+  if (contact) {
+    if (String(contact.user_id || "") !== telegramUserId) {
+      await sendTelegramText(telegramChatId, "Contact must be shared from the same Telegram account.");
+      return { processed: true };
+    }
+
+    const signupResult = await completeTelegramSignupContact({
+      telegramUserId,
+      telegramChatId,
+      telegramUsername,
+      firstName,
+      lastName,
+      phoneNumber: contact.phone_number || "",
+    });
+
+    await sendTelegramText(telegramChatId, signupResult.message);
+    return { processed: true };
+  }
 
   const startMatch = text.match(/^\/start(?:@\w+)?(?:\s+(.+))?$/i);
 
@@ -1410,7 +1553,12 @@ export async function handleTelegramWebhookUpdate(update) {
         lastName,
       });
 
-      await sendTelegramText(telegramChatId, authResult.message);
+      if (authResult.requiresContact) {
+        await requestTelegramContact(telegramChatId, authResult.role || "teacher");
+      } else {
+        await sendTelegramText(telegramChatId, authResult.message);
+      }
+
       return { processed: true };
     }
 
@@ -1429,28 +1577,18 @@ export async function handleTelegramWebhookUpdate(update) {
 
       const upcomingLessons = await listUpcomingLessons(linkResult.userId, 1);
       const welcomeText = upcomingLessons.length
-        ? `Account linked successfully.\n\n${formatLessonDetails(upcomingLessons[0])}`
+        ? `Account linked successfully.
+
+${formatLessonDetails(upcomingLessons[0])}`
         : "Account linked successfully. You will now receive messages, notifications, and lesson reminders here.";
       await sendTelegramText(telegramChatId, welcomeText);
       return { processed: true };
     }
 
     if (payload === "register_teacher" || payload === "register_student") {
-      const role = payload === "register_student" ? "student" : "teacher";
-      const registration = await registerTelegramUserAccount({
-        telegramUserId,
-        telegramChatId,
-        telegramUsername,
-        firstName,
-        lastName,
-        role,
-      });
-
       await sendTelegramText(
         telegramChatId,
-        registration.alreadyRegistered
-          ? `This Telegram is already linked to ${registration.fullName}.`
-          : `Account created and linked successfully.\n\nRole: ${role}\nName: ${registration.fullName}\n\nYou can now use this Telegram for notifications and sign in to the website via Telegram.`,
+        "Open registration on the website, then continue in Telegram from the button on the sign-up page.",
       );
       return { processed: true };
     }
@@ -1470,21 +1608,9 @@ export async function handleTelegramWebhookUpdate(update) {
   }
 
   if (/^\/register_teacher(?:@\w+)?$/i.test(text) || /^\/register_student(?:@\w+)?$/i.test(text)) {
-    const role = /student/i.test(text) ? "student" : "teacher";
-    const registration = await registerTelegramUserAccount({
-      telegramUserId,
-      telegramChatId,
-      telegramUsername,
-      firstName,
-      lastName,
-      role,
-    });
-
     await sendTelegramText(
       telegramChatId,
-      registration.alreadyRegistered
-        ? `This Telegram is already linked to ${registration.fullName}.`
-        : `Account created and linked successfully.\n\nRole: ${role}\nName: ${registration.fullName}\n\nUse "Sign in with Telegram" on the website if you need browser access.`,
+      "Start registration from the website and then approve it here by sharing your contact.",
     );
     return { processed: true };
   }
@@ -1562,7 +1688,6 @@ export async function handleTelegramWebhookUpdate(update) {
 
   return { processed: true };
 }
-
 export async function completeTelegramLink({
   credential,
   telegramUserId,

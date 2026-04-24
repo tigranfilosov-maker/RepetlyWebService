@@ -58,7 +58,7 @@ export function TelegramAuthPage() {
         setRequest(data.request);
         setMessage(
           mode === "signup"
-            ? "Откройте бота, подтвердите регистрацию и дождитесь автоматического входа."
+            ? "Откройте бота, поделитесь контактом и дождитесь автоматического входа."
             : "Откройте бота, подтвердите вход и дождитесь автоматической авторизации.",
         );
       } catch (requestError) {
@@ -138,7 +138,7 @@ export function TelegramAuthPage() {
   return (
     <AuthShell
       title={mode === "signup" ? "Регистрация через Telegram" : "Вход через Telegram"}
-      subtitle="Локальный режим: подтверждение выполняется через бота, без публикации сайта в интернет."
+      subtitle="Подтверждение выполняется через Telegram-бота. Для регистрации бот запросит контакт и автоматически заполнит профиль."
       footer={
         <>
           <Link to={mode === "signup" ? "/sign-up" : "/sign-in"}>Вернуться назад</Link>
@@ -157,18 +157,20 @@ export function TelegramAuthPage() {
           <p>
             1. Откройте бота <strong>@{request.botUsername}</strong>.
           </p>
-          <p>2. Нажмите кнопку ниже или отправьте команду вручную.</p>
+          <p>
+            2.{" "}
+            {mode === "signup"
+              ? "Нажмите кнопку ниже, откройте чат и отправьте свой контакт по запросу бота."
+              : "Нажмите кнопку ниже и подтвердите вход в боте."}
+          </p>
           <div className="telegram-auth-card__actions">
             <a className="auth-submit telegram-auth-card__link" href={request.botUrl}>
               Открыть бота
             </a>
           </div>
-          <div className="telegram-auth-card__command">
-            <strong>Команда для бота</strong>
-            <code>{request.command}</code>
-          </div>
           <small>
-            После подтверждения мы автоматически завершим {mode === "signup" ? "регистрацию" : "вход"} в этом окне.
+            После подтверждения мы автоматически завершим {mode === "signup" ? "регистрацию" : "вход"} в
+            этом окне.
           </small>
         </div>
       ) : null}

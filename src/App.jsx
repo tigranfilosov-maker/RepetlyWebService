@@ -1,5 +1,6 @@
 import { Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import { useAuth } from "./auth/AuthContext";
+import { useI18n } from "./i18n/I18nContext";
 import { pageRegistry } from "./routes";
 import { getDefaultPathForRole, getPageMetaByPath } from "./routeMeta";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
@@ -12,9 +13,10 @@ import { TelegramAuthPage } from "./pages/TelegramAuthPage";
 function ProtectedRoute() {
   const location = useLocation();
   const { isLoading, user } = useAuth();
+  const { t } = useI18n();
 
   if (isLoading) {
-    return <div className="app-loading">Загрузка сессии...</div>;
+    return <div className="app-loading">{t("common.loadingSession")}</div>;
   }
 
   if (!user) {
@@ -32,9 +34,10 @@ function ProtectedRoute() {
 
 function PublicOnlyRoute({ children }) {
   const { isLoading, user } = useAuth();
+  const { t } = useI18n();
 
   if (isLoading) {
-    return <div className="app-loading">Загрузка сессии...</div>;
+    return <div className="app-loading">{t("common.loadingSession")}</div>;
   }
 
   if (user) {

@@ -50,7 +50,7 @@ export function TeachersManagementPage() {
               {connectedUsers.map((user) => (
                 <div key={user.id} className="management-list__item">
                   <strong>{user.fullName}</strong>
-                  <span>{user.email}</span>
+                  <span>{user.username ? `@${user.username}` : user.email}</span>
                 </div>
               ))}
               {!connectedUsers.length ? (

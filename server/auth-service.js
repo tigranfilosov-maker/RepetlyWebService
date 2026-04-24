@@ -22,6 +22,18 @@ function normalizeEmail(value) {
   return value.trim().toLowerCase();
 }
 
+export function normalizeUsername(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "")
+    .replace(/[^a-z0-9_]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  return normalized;
+}
+
 function normalizeNullableText(value) {
   const normalized = (value || "").trim();
   return normalized ? normalized : null;
@@ -76,6 +88,7 @@ export function mapUser(row) {
     id: row.id,
     fullName: row.full_name,
     email: row.email,
+    username: row.username || "",
     phoneNumber: row.phone_number,
     avatar: row.avatar_url,
     subject: row.subject,
@@ -129,6 +142,29 @@ export async function getUserByEmail(email) {
   return get(`SELECT * FROM users WHERE email = ?`, [normalizeEmail(email)]);
 }
 
+export async function getUserByUsername(username) {
+  const normalized = normalizeUsername(username);
+
+  if (!normalized) {
+    return null;
+  }
+
+  return get(`SELECT * FROM users WHERE username = ?`, [normalized]);
+}
+
+export async function ensureUniqueUsername(username, fallback = "user") {
+  const base = normalizeUsername(username) || normalizeUsername(fallback) || "user";
+  let candidate = base;
+  let suffix = 1;
+
+  while (await getUserByUsername(candidate)) {
+    suffix += 1;
+    candidate = `${base}_${suffix}`;
+  }
+
+  return candidate;
+}
+
 export async function getUserById(userId) {
   return get(`SELECT * FROM users WHERE id = ?`, [userId]);
 }
@@ -136,6 +172,7 @@ export async function getUserById(userId) {
 export async function createUser({
   fullName,
   email,
+  username = "",
   phoneNumber = "",
   avatarUrl = "",
   role = "teacher",
@@ -147,13 +184,14 @@ export async function createUser({
   await run(
     `
       INSERT INTO users (
-        id, full_name, email, phone_number, avatar_url, role, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, full_name, email, username, phone_number, avatar_url, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       id,
       fullName.trim(),
       normalizeEmail(email),
+      normalizeUsername(username) || null,
       phoneNumber.trim() || null,
       avatarUrl || null,
       role,
@@ -428,10 +466,13 @@ export async function upsertSocialUser({
   providerUserId,
   email,
   fullName,
+  username = "",
+  phoneNumber = "",
   avatarUrl = "",
   role = "teacher",
 }) {
   const normalizedEmail = normalizeEmail(email);
+  const normalizedUsername = normalizeUsername(username);
   const existingIdentity = await findIdentity(provider, providerUserId);
 
   if (existingIdentity) {
@@ -439,10 +480,10 @@ export async function upsertSocialUser({
     await run(
       `
         UPDATE users
-        SET full_name = ?, email = ?, avatar_url = ?, updated_at = ?
+        SET full_name = ?, email = ?, username = COALESCE(?, username), phone_number = COALESCE(?, phone_number), avatar_url = ?, updated_at = ?
         WHERE id = ?
       `,
-      [fullName, normalizedEmail, avatarUrl || null, timestamp, existingIdentity.user_id],
+      [fullName, normalizedEmail, normalizedUsername || null, normalizeNullableText(phoneNumber), avatarUrl || null, timestamp, existingIdentity.user_id],
     );
     return getUserById(existingIdentity.user_id);
   }
@@ -453,6 +494,8 @@ export async function upsertSocialUser({
     user = await createUser({
       fullName,
       email: normalizedEmail,
+      username: normalizedUsername,
+      phoneNumber,
       avatarUrl,
       role,
     });
@@ -494,12 +537,13 @@ export async function updateUserProfile(userId, updates) {
   await run(
     `
       UPDATE users
-      SET full_name = ?, email = ?, phone_number = ?, avatar_url = ?, subject = ?, updated_at = ?
+      SET full_name = ?, email = ?, username = ?, phone_number = ?, avatar_url = ?, subject = ?, updated_at = ?
       WHERE id = ?
     `,
     [
       updates.fullName?.trim() || existingUser.full_name,
       nextEmail,
+      normalizeUsername(updates.username ?? existingUser.username) || null,
       normalizeNullableText(updates.phoneNumber),
       normalizeNullableText(updates.avatar),
       normalizeNullableText(updates.subject || updates.subjects?.[0]?.name || ""),
@@ -556,6 +600,7 @@ export async function ensureDefaultAdminAccount({ adminEmail, adminPassword, adm
     adminUser = await createUser({
       fullName: adminFullName,
       email: adminEmail,
+      username: "admin",
       role: "admin",
       status: "active",
     });

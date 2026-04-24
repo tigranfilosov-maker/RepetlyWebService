@@ -27,7 +27,8 @@ const plans = [
     name: "Онлайн-школа",
     price: "По договорённости",
     cadence: "индивидуально",
-    description: "Для команд и школ, которым нужны расширение преподавателей, сопровождение и индивидуальные условия запуска.",
+    description:
+      "Для команд и школ, которым нужны расширение преподавателей, сопровождение и индивидуальные условия запуска.",
     highlights: ["Безлимитные ученики", "Безлимитные преподаватели", "Онбординг и индивидуальные условия"],
     cta: "Связаться с нами",
     href: "https://t.me/chepotemam_adm",
@@ -56,10 +57,10 @@ export function PricingPage() {
       <section className="pricing-page">
         <article className="panel panel--focus pricing-hero">
           <div>
-            <p className="eyebrow">Тарифы для преподавателей</p>
             <h2>Выберите тариф под ваш формат работы</h2>
             <p>
-              Сохраняйте привычный интерфейс Repetly и масштабируйте работу от личной практики до полноценной онлайн-школы.
+              Сохраняйте привычный интерфейс Repetly и масштабируйте работу от личной практики до полноценной
+              онлайн-школы.
             </p>
           </div>
 
@@ -67,10 +68,6 @@ export function PricingPage() {
             <span className="panel-chip">
               Текущий тариф: {plans.find((plan) => plan.id === currentPlan)?.name || "Старт"}
             </span>
-            <div className="pricing-hero__note">
-              <strong>Единый интерфейс на всех тарифах</strong>
-              <span>Светлая и тёмная темы доступны на каждом тарифе.</span>
-            </div>
           </div>
         </article>
 
