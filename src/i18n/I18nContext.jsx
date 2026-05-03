@@ -28,6 +28,7 @@ const translations = {
       students: "Students",
       groups: "Groups",
       teachers: "Teachers",
+      homework: "Homework",
       schedule: "Schedule",
       messages: "Messages",
       lessons: "Lessons",
@@ -412,6 +413,7 @@ const translations = {
       students: "Ученики",
       groups: "Группы",
       teachers: "Преподаватели",
+      homework: "Домашние задания",
       schedule: "Расписание",
       messages: "Сообщения",
       lessons: "Занятия",
@@ -775,16 +777,7 @@ const translations = {
 };
 
 function getInitialLanguage() {
-  if (typeof window === "undefined") {
-    return "en";
-  }
-
-  const storedLanguage = window.localStorage.getItem(STORAGE_KEY);
-  if (storedLanguage === "ru" || storedLanguage === "en") {
-    return storedLanguage;
-  }
-
-  return window.navigator.language?.toLowerCase().startsWith("ru") ? "ru" : "en";
+  return "ru";
 }
 
 function interpolate(template, params = {}) {
@@ -796,23 +789,27 @@ function getNestedValue(source, path) {
 }
 
 export function I18nProvider({ children }) {
-  const [language, setLanguage] = useState(getInitialLanguage);
+  const [language, setLanguageState] = useState(getInitialLanguage);
 
   useEffect(() => {
-    document.documentElement.lang = language;
-    window.localStorage.setItem(STORAGE_KEY, language);
-  }, [language]);
+    document.documentElement.lang = "ru";
+    window.localStorage.setItem(STORAGE_KEY, "ru");
+  }, []);
+
+  function setLanguage() {
+    setLanguageState("ru");
+  }
 
   const value = useMemo(
     () => ({
-      language,
+      language: "ru",
       setLanguage,
       t(key, params = {}) {
-        const template = getNestedValue(translations[language], key) ?? getNestedValue(translations.en, key) ?? key;
+        const template = getNestedValue(translations.ru, key) ?? key;
         return typeof template === "string" ? interpolate(template, params) : template;
       },
       tm(key) {
-        return getNestedValue(translations[language], key) ?? getNestedValue(translations.en, key) ?? [];
+        return getNestedValue(translations.ru, key) ?? [];
       },
     }),
     [language],

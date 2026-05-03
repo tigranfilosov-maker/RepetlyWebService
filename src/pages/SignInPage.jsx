@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { AuthShell } from "../components/AuthShell";
-import { AuthError, Field, SocialButtons } from "../components/AuthFormParts";
+import { Field, SocialButtons } from "../components/AuthFormParts";
+import { ToastNotification } from "../components/ToastNotification";
 import { getDefaultPathForRole } from "../routeMeta";
 
 function mapQueryError(errorCode) {
@@ -22,7 +23,14 @@ export function SignInPage() {
   const location = useLocation();
   const [formState, setFormState] = useState({ email: "", password: "" });
   const [error, setError] = useState(mapQueryError(new URLSearchParams(location.search).get("error")));
+  const [toast, setToast] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (error) {
+      setToast({ id: Date.now(), type: "error", message: error });
+    }
+  }, [error]);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -50,7 +58,6 @@ export function SignInPage() {
       }
     >
       <form className="auth-form" onSubmit={handleSubmit}>
-        <AuthError message={error} />
         <Field
           id="sign-in-email"
           label="Email"
@@ -90,6 +97,7 @@ export function SignInPage() {
         telegramHref="/api/auth/telegram/start?mode=signin"
         telegramLabel="Telegram"
       />
+      <ToastNotification toast={toast} onClose={() => setToast(null)} />
     </AuthShell>
   );
 }

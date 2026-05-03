@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppLayout } from "../components/AppLayout";
 import { authRequest } from "../auth/AuthContext";
 import { DropdownSelect } from "../components/DropdownSelect";
+import { ImageCropDialog } from "../components/ImageCropDialog";
 import { SiteMark } from "../components/SiteMark";
 import { useSiteSettings } from "../site/SiteSettingsContext";
 
@@ -33,13 +34,17 @@ const audienceOptions = [
 ];
 
 export function AdminPage() {
-  const { siteSettings } = useSiteSettings();
+  const { siteSettings, updateSiteSettings } = useSiteSettings();
   const [overview, setOverview] = useState(null);
   const [users, setUsers] = useState([]);
   const [activeSection, setActiveSection] = useState("overview");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [cropSource, setCropSource] = useState("");
+  const [isSavingSite, setIsSavingSite] = useState(false);
+  const [selectedFileName, setSelectedFileName] = useState("");
   const [isSendingNotifications, setIsSendingNotifications] = useState(false);
+  const fileInputRef = useRef(null);
   const [notificationForm, setNotificationForm] = useState({
     audience: "all",
     title: "",

@@ -1,4 +1,5 @@
 import { useI18n } from "../i18n/I18nContext";
+import authShowcaseImage from "../assets/auth-showcase.png";
 import { SiteMark } from "./SiteMark";
 
 export function AuthShell({ title, subtitle, footer, children }) {
@@ -24,14 +25,7 @@ export function AuthShell({ title, subtitle, footer, children }) {
           </div>
 
           <div className="auth-preview">
-            <div className="auth-preview__panel" />
-            <div className="auth-preview__row" />
-            <div className="auth-preview__row auth-preview__row--short" />
-            <div className="auth-preview__grid">
-              <span />
-              <span />
-              <span />
-            </div>
+            <img src={authShowcaseImage} alt="Repetly на ноутбуке и телефоне" />
           </div>
         </div>
 

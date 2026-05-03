@@ -114,7 +114,14 @@ const studentInviteSchema = z.object({
 });
 
 const relationshipSubjectsSchema = z.object({
-  subjectIds: z.array(z.string().trim().min(1)).default([]),
+  subjectIds: z.array(z.string().trim().min(1)).max(1).default([]),
+});
+
+const homeworkAttachmentSchema = z.object({
+  name: z.string().trim().min(1).max(180),
+  type: z.string().trim().max(120).optional().default("application/octet-stream"),
+  size: z.number().int().min(0).max(10 * 1024 * 1024),
+  dataUrl: z.string().trim().startsWith("data:").max(14 * 1024 * 1024),
 });
 
 const homeworkAssignmentSchema = z.object({
@@ -122,6 +129,7 @@ const homeworkAssignmentSchema = z.object({
   title: z.string().trim().min(2, "Homework title is required.").max(160),
   description: z.string().trim().min(2, "Homework description is required.").max(2000),
   dueDate: z.string().trim().optional().default(""),
+  attachments: z.array(homeworkAttachmentSchema).max(1).optional().default([]),
 });
 
 const groupSchema = z.object({
@@ -134,6 +142,14 @@ const groupHomeworkSchema = z.object({
   title: z.string().trim().min(2, "Homework title is required.").max(160),
   description: z.string().trim().min(2, "Homework description is required.").max(2000),
   dueDate: z.string().trim().optional().default(""),
+});
+
+const homeworkReviewSchema = z.object({
+  grade: z.string().trim().max(80, "Оценка слишком длинная.").optional().default(""),
+});
+
+const homeworkSubmitSchema = z.object({
+  attachments: z.array(homeworkAttachmentSchema).max(1).optional().default([]),
 });
 
 const boardCreateSchema = z.object({
@@ -179,11 +195,16 @@ const scheduleEntrySchema = z
       .default(""),
     participantId: z.string().trim().optional().default(""),
     status: z.enum(["planned", "confirmed", "completed"]).optional().default("planned"),
+    repeatWeekly: z.boolean().optional().default(false),
   })
   .refine((payload) => payload.endHour > payload.startHour, {
     message: "End time must be after start time.",
     path: ["endHour"],
   });
+
+const lessonCancellationRequestSchema = z.object({
+  reason: z.string().trim().max(1000, "Укажите причину короче.").optional().default(""),
+});
 
 const settingsPreferencesSchema = z.object({
   themePreference: z.enum(["system", "light", "dark"]).default("system"),
@@ -502,7 +523,7 @@ async function getTeacherGroupsDetailed(teacherId) {
       );
       const homework = await all(
         `
-          SELECT id, title, description, due_date, status, created_at, updated_at
+          SELECT id, title, description, attachments_json, due_date, status, created_at, updated_at
           FROM homework_assignments
           WHERE group_id = ?
           ORDER BY COALESCE(due_date, '9999-12-31') ASC, updated_at DESC
@@ -538,6 +559,7 @@ async function getTeacherGroupsDetailed(teacherId) {
           id: item.id,
           title: item.title,
           description: item.description,
+          attachments: parseHomeworkAttachments(item.attachments_json),
           dueDate: item.due_date || "",
           status: item.status,
           createdAt: item.created_at,
@@ -546,6 +568,54 @@ async function getTeacherGroupsDetailed(teacherId) {
       };
     }),
   );
+}
+
+function parseHomeworkAttachments(value) {
+  try {
+    const attachments = JSON.parse(value || "[]");
+    return Array.isArray(attachments) ? attachments : [];
+  } catch {
+    return [];
+  }
+}
+
+async function ensureHomeworkSubmission(assignmentId, studentId, status = "assigned") {
+  const existing = await get(
+    `
+      SELECT id
+      FROM homework_submissions
+      WHERE assignment_id = ? AND student_id = ?
+      LIMIT 1
+    `,
+    [assignmentId, studentId],
+  );
+
+  if (existing) {
+    return existing.id;
+  }
+
+  const submissionId = crypto.randomUUID();
+  const timestamp = new Date().toISOString();
+  await run(
+    `
+      INSERT INTO homework_submissions (id, assignment_id, student_id, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `,
+    [submissionId, assignmentId, studentId, status, timestamp, timestamp],
+  );
+
+  return submissionId;
+}
+
+function homeworkStatusLabel(status) {
+  const labels = {
+    assigned: "Выдано",
+    submitted: "На проверке",
+    done: "Выполнено",
+    cancelled: "Отменено",
+  };
+
+  return labels[status] || "Выдано";
 }
 
 async function syncGroupConversation(groupId, teacherId) {
@@ -666,7 +736,7 @@ async function listConversationsForUser(userId) {
       if (conversation.type === "group") {
         const members = await all(
           `
-            SELECT u.id, u.full_name, u.username, u.email
+            SELECT u.id, u.full_name, u.username, u.email, u.avatar_url
             FROM conversation_members cm
             INNER JOIN users u ON u.id = cm.user_id
             WHERE cm.conversation_id = ? AND u.id != ?
@@ -691,6 +761,7 @@ async function listConversationsForUser(userId) {
             fullName: member.full_name,
             username: member.username || "",
             email: member.email,
+            avatar: member.avatar_url || "",
           })),
         };
       }
@@ -750,7 +821,14 @@ async function getConversationResponse(conversationId, userId) {
 
   const messages = await all(
     `
-      SELECT m.id, m.content, m.created_at, m.sender_id, sender.full_name AS sender_name
+      SELECT
+        m.id,
+        m.content,
+        m.created_at,
+        m.sender_id,
+        sender.full_name AS sender_name,
+        sender.username AS sender_username,
+        sender.avatar_url AS sender_avatar
       FROM messages m
       INNER JOIN users sender ON sender.id = m.sender_id
       WHERE m.conversation_id = ?
@@ -762,7 +840,7 @@ async function getConversationResponse(conversationId, userId) {
   if (baseConversation?.type === "group") {
     const members = await all(
       `
-        SELECT u.id, u.full_name, u.username, u.email, u.role
+        SELECT u.id, u.full_name, u.username, u.email, u.role, u.avatar_url
         FROM conversation_members cm
         INNER JOIN users u ON u.id = cm.user_id
         WHERE cm.conversation_id = ?
@@ -785,6 +863,7 @@ async function getConversationResponse(conversationId, userId) {
           username: member.username || "",
           email: member.email,
           role: member.role,
+          avatar: member.avatar_url || "",
         })),
       },
       messages: messages.map((item) => ({
@@ -793,6 +872,8 @@ async function getConversationResponse(conversationId, userId) {
         createdAt: item.created_at,
         senderId: item.sender_id,
         senderName: item.sender_name,
+        senderUsername: item.sender_username || "",
+        senderAvatar: item.sender_avatar || "",
         isOwn: item.sender_id === userId,
       })),
     };
@@ -832,6 +913,8 @@ async function getConversationResponse(conversationId, userId) {
       createdAt: item.created_at,
       senderId: item.sender_id,
       senderName: item.sender_name,
+      senderUsername: item.sender_username || "",
+      senderAvatar: item.sender_avatar || "",
       isOwn: item.sender_id === userId,
     })),
   };
@@ -865,6 +948,16 @@ async function requireConversationMember(conversationId, userId) {
 
 function toHourLabel(hour) {
   return `${String(hour).padStart(2, "0")}:00`;
+}
+
+function toDateKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function addDaysToDateKey(dateKey, days) {
+  const date = new Date(`${dateKey}T00:00:00`);
+  date.setDate(date.getDate() + days);
+  return toDateKey(date);
 }
 
 function buildDaySummary(entries) {
@@ -1041,6 +1134,15 @@ async function createNotification(userId, { type, title, body, link = "", meta =
   }).catch((error) => {
     console.error("[telegram] app notification delivery failed", error);
   });
+}
+
+function parseJsonObject(value) {
+  try {
+    const parsed = JSON.parse(value || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 async function getUnreadNotificationCount(userId) {
@@ -2355,6 +2457,290 @@ app.get("/api/dashboard-summary", requireSession, async (req, res, next) => {
   }
 });
 
+function toIsoDate(value) {
+  return value.toISOString().slice(0, 10);
+}
+
+function addDays(value, amount) {
+  const next = new Date(value);
+  next.setDate(next.getDate() + amount);
+  return next;
+}
+
+function addMonths(value, amount) {
+  const next = new Date(value);
+  next.setMonth(next.getMonth() + amount);
+  return next;
+}
+
+function getMonthKey(value) {
+  return value.toISOString().slice(0, 7);
+}
+
+function formatMonthLabel(monthKey) {
+  const [year, month] = monthKey.split("-").map(Number);
+  return new Date(year, month - 1, 1).toLocaleDateString("ru-RU", {
+    month: "short",
+  });
+}
+
+app.get("/api/analytics/overview", requireSession, requireRole("teacher"), async (req, res, next) => {
+  try {
+    const now = new Date();
+    const today = toIsoDate(now);
+    const currentHour = now.getHours();
+    const monthStart = `${today.slice(0, 7)}-01`;
+    const monthEnd = toIsoDate(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+    const chartStart = toIsoDate(addDays(now, -13));
+    const chartEnd = today;
+    const financeStart = getMonthKey(addMonths(now, -5));
+
+    const [
+      monthSummary,
+      activeStudents,
+      groups,
+      homeworkRows,
+      pendingCancelRequests,
+      dailyRows,
+      financeRows,
+      topStudents,
+      subjectRows,
+      weekdayRows,
+      upcomingLessons,
+    ] = await Promise.all([
+      get(
+        `
+          SELECT
+            COUNT(*) AS total_lessons,
+            COALESCE(SUM(end_hour - start_hour), 0) AS total_hours,
+            SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_lessons,
+            COALESCE(SUM(CASE WHEN status = 'cancelled' THEN end_hour - start_hour ELSE 0 END), 0) AS cancelled_hours,
+            SUM(CASE WHEN status != 'cancelled' AND (date < ? OR (date = ? AND end_hour <= ?)) THEN 1 ELSE 0 END) AS completed_lessons,
+            COALESCE(SUM(CASE WHEN status != 'cancelled' AND (date < ? OR (date = ? AND end_hour <= ?)) THEN end_hour - start_hour ELSE 0 END), 0) AS completed_hours,
+            SUM(CASE WHEN status != 'cancelled' AND (date > ? OR (date = ? AND end_hour > ?)) THEN 1 ELSE 0 END) AS upcoming_lessons,
+            COALESCE(SUM(CASE WHEN status != 'cancelled' AND (date > ? OR (date = ? AND end_hour > ?)) THEN end_hour - start_hour ELSE 0 END), 0) AS upcoming_hours
+          FROM schedule_entries
+          WHERE user_id = ? AND date >= ? AND date <= ?
+        `,
+        [
+          today,
+          today,
+          currentHour,
+          today,
+          today,
+          currentHour,
+          today,
+          today,
+          currentHour,
+          today,
+          today,
+          currentHour,
+          req.user.id,
+          monthStart,
+          monthEnd,
+        ],
+      ),
+      get(`SELECT COUNT(*) AS count FROM teacher_student_relationships WHERE teacher_id = ?`, [req.user.id]),
+      get(`SELECT COUNT(*) AS count FROM groups WHERE teacher_id = ?`, [req.user.id]),
+      all(
+        `
+          SELECT status, COUNT(*) AS count
+          FROM homework_assignments
+          WHERE teacher_id = ?
+          GROUP BY status
+        `,
+        [req.user.id],
+      ),
+      get(
+        `
+          SELECT COUNT(*) AS count
+          FROM lesson_cancellation_requests
+          WHERE teacher_id = ? AND status = 'pending'
+        `,
+        [req.user.id],
+      ),
+      all(
+        `
+          SELECT
+            date,
+            COUNT(*) AS lessons,
+            COALESCE(SUM(end_hour - start_hour), 0) AS hours
+          FROM schedule_entries
+          WHERE user_id = ?
+            AND date >= ?
+            AND date <= ?
+            AND status != 'cancelled'
+          GROUP BY date
+          ORDER BY date ASC
+        `,
+        [req.user.id, chartStart, chartEnd],
+      ),
+      all(
+        `
+          SELECT
+            substr(date, 1, 7) AS month,
+            COALESCE(SUM(CASE WHEN status != 'cancelled' AND (date < ? OR (date = ? AND end_hour <= ?)) THEN end_hour - start_hour ELSE 0 END), 0) AS billable_hours,
+            COALESCE(SUM(CASE WHEN status != 'cancelled' AND (date > ? OR (date = ? AND end_hour > ?)) THEN end_hour - start_hour ELSE 0 END), 0) AS planned_hours,
+            COALESCE(SUM(CASE WHEN status = 'cancelled' THEN end_hour - start_hour ELSE 0 END), 0) AS cancelled_hours
+          FROM schedule_entries
+          WHERE user_id = ?
+            AND substr(date, 1, 7) >= ?
+          GROUP BY substr(date, 1, 7)
+          ORDER BY month ASC
+        `,
+        [today, today, currentHour, today, today, currentHour, req.user.id, financeStart],
+      ),
+      all(
+        `
+          SELECT
+            COALESCE(partner.full_name, 'Без ученика') AS name,
+            COUNT(*) AS lessons,
+            COALESCE(SUM(e.end_hour - e.start_hour), 0) AS hours
+          FROM schedule_entries e
+          LEFT JOIN users partner ON partner.id = e.partner_id
+          WHERE e.user_id = ?
+            AND e.date >= ?
+            AND e.date <= ?
+            AND e.status != 'cancelled'
+          GROUP BY COALESCE(partner.id, 'none'), COALESCE(partner.full_name, 'Без ученика')
+          ORDER BY hours DESC, lessons DESC, name ASC
+          LIMIT 5
+        `,
+        [req.user.id, monthStart, monthEnd],
+      ),
+      all(
+        `
+          SELECT ts.name, COUNT(DISTINCT rs.relationship_id) AS students
+          FROM teacher_subjects ts
+          LEFT JOIN relationship_subjects rs ON rs.teacher_subject_id = ts.id
+          WHERE ts.teacher_id = ?
+          GROUP BY ts.id, ts.name, ts.sort_order
+          ORDER BY students DESC, ts.sort_order ASC, ts.name COLLATE NOCASE ASC
+        `,
+        [req.user.id],
+      ),
+      all(
+        `
+          SELECT
+            CAST(strftime('%w', date) AS INTEGER) AS weekday,
+            COUNT(*) AS lessons,
+            COALESCE(SUM(end_hour - start_hour), 0) AS hours
+          FROM schedule_entries
+          WHERE user_id = ?
+            AND date >= ?
+            AND date <= ?
+            AND status != 'cancelled'
+          GROUP BY CAST(strftime('%w', date) AS INTEGER)
+        `,
+        [req.user.id, monthStart, monthEnd],
+      ),
+      all(
+        `
+          SELECT e.id, e.title, e.date, e.start_hour, e.end_hour, partner.full_name AS partner_name
+          FROM schedule_entries e
+          LEFT JOIN users partner ON partner.id = e.partner_id
+          WHERE e.user_id = ?
+            AND e.status != 'cancelled'
+            AND (e.date > ? OR (e.date = ? AND e.end_hour > ?))
+          ORDER BY e.date ASC, e.start_hour ASC
+          LIMIT 4
+        `,
+        [req.user.id, today, today, currentHour],
+      ),
+    ]);
+
+    const dailyByDate = new Map(dailyRows.map((item) => [item.date, item]));
+    const daily = Array.from({ length: 14 }, (_, index) => {
+      const date = toIsoDate(addDays(new Date(chartStart), index));
+      const item = dailyByDate.get(date);
+      return {
+        date,
+        label: new Date(date).toLocaleDateString("ru-RU", { day: "2-digit", month: "short" }),
+        lessons: item?.lessons || 0,
+        hours: item?.hours || 0,
+      };
+    });
+
+    const financeByMonth = new Map(financeRows.map((item) => [item.month, item]));
+    const monthlyFinance = Array.from({ length: 6 }, (_, index) => {
+      const month = getMonthKey(addMonths(new Date(`${financeStart}-01T00:00:00.000Z`), index));
+      const item = financeByMonth.get(month);
+      return {
+        month,
+        label: formatMonthLabel(month),
+        billableHours: item?.billable_hours || 0,
+        plannedHours: item?.planned_hours || 0,
+        cancelledHours: item?.cancelled_hours || 0,
+      };
+    });
+
+    const homeworkByStatus = Object.fromEntries(homeworkRows.map((item) => [item.status, item.count]));
+    const weekdayLabels = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
+    const weekdays = weekdayLabels.map((label, weekday) => {
+      const item = weekdayRows.find((row) => row.weekday === weekday);
+      return {
+        label,
+        lessons: item?.lessons || 0,
+        hours: item?.hours || 0,
+      };
+    });
+
+    const completedLessons = monthSummary?.completed_lessons || 0;
+    const cancelledLessons = monthSummary?.cancelled_lessons || 0;
+    const totalLessons = monthSummary?.total_lessons || 0;
+    const completionRate = totalLessons ? Math.round((completedLessons / totalLessons) * 100) : 0;
+    const cancellationRate = totalLessons ? Math.round((cancelledLessons / totalLessons) * 100) : 0;
+
+    res.json({
+      period: {
+        monthStart,
+        monthEnd,
+        generatedAt: now.toISOString(),
+      },
+      stats: {
+        activeStudents: activeStudents?.count || 0,
+        groups: groups?.count || 0,
+        totalLessons,
+        completedLessons,
+        upcomingLessons: monthSummary?.upcoming_lessons || 0,
+        cancelledLessons,
+        totalHours: monthSummary?.total_hours || 0,
+        completedHours: monthSummary?.completed_hours || 0,
+        upcomingHours: monthSummary?.upcoming_hours || 0,
+        cancelledHours: monthSummary?.cancelled_hours || 0,
+        completionRate,
+        cancellationRate,
+        pendingCancelRequests: pendingCancelRequests?.count || 0,
+        homeworkAssigned: homeworkByStatus.assigned || 0,
+        homeworkDone: homeworkByStatus.done || 0,
+      },
+      charts: {
+        daily,
+        monthlyFinance,
+        weekdays,
+      },
+      topStudents: topStudents.map((item) => ({
+        name: item.name,
+        lessons: item.lessons || 0,
+        hours: item.hours || 0,
+      })),
+      subjects: subjectRows.map((item) => ({
+        name: item.name,
+        students: item.students || 0,
+      })),
+      upcoming: upcomingLessons.map((item) => ({
+        id: item.id,
+        title: item.title,
+        partnerName: item.partner_name || "Без ученика",
+        date: item.date,
+        timeRange: formatHourRange(item.start_hour, item.end_hour),
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/admin/overview", requireSession, requireRole("admin"), async (req, res, next) => {
   try {
     const [
@@ -2646,6 +3032,7 @@ app.get("/api/teacher-students", requireSession, requireRole("teacher"), async (
             hw.student_id,
             hw.title,
             hw.description,
+            hw.attachments_json,
             hw.due_date,
             hw.status,
             hw.created_at,
@@ -2666,6 +3053,7 @@ app.get("/api/teacher-students", requireSession, requireRole("teacher"), async (
         studentId: item.student_id,
         title: item.title,
         description: item.description,
+        attachments: parseHomeworkAttachments(item.attachments_json),
         dueDate: item.due_date || "",
         status: item.status,
         createdAt: item.created_at,
@@ -2791,21 +3179,24 @@ app.post("/api/teacher-students/:studentId/homework", requireSession, requireRol
     const assignmentId = crypto.randomUUID();
     const timestamp = new Date().toISOString();
     const dueDate = normalizeDateValue(payload.dueDate);
+    const attachmentsJson = JSON.stringify(payload.attachments);
 
     await run(
       `
         INSERT INTO homework_assignments (
-          id, teacher_id, student_id, group_id, title, description, due_date, status, created_at, updated_at
-        ) VALUES (?, ?, ?, NULL, ?, ?, ?, 'assigned', ?, ?)
+          id, teacher_id, student_id, group_id, title, description, attachments_json, due_date, status, created_at, updated_at
+        ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 'assigned', ?, ?)
       `,
-      [assignmentId, req.user.id, payload.studentId, payload.title, payload.description, dueDate, timestamp, timestamp],
+      [assignmentId, req.user.id, payload.studentId, payload.title, payload.description, attachmentsJson, dueDate, timestamp, timestamp],
     );
+
+    await ensureHomeworkSubmission(assignmentId, payload.studentId);
 
     await createNotification(payload.studentId, {
       type: "homework_assigned",
-      title: "New homework assigned",
+      title: "Новое домашнее задание",
       body: payload.title,
-      link: "/students",
+      link: "/homework",
       meta: {
         assignmentId,
         teacherId: req.user.id,
@@ -2818,12 +3209,289 @@ app.post("/api/teacher-students/:studentId/homework", requireSession, requireRol
         studentId: payload.studentId,
         title: payload.title,
         description: payload.description,
+        attachments: payload.attachments,
         dueDate: dueDate || "",
         status: "assigned",
         createdAt: timestamp,
         updatedAt: timestamp,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/homework", requireSession, async (req, res, next) => {
+  try {
+    if (req.user.role === "student") {
+      const rows = await all(
+        `
+          SELECT
+            hw.id,
+            hw.teacher_id,
+            hw.student_id,
+            hw.group_id,
+            hw.title,
+            hw.description,
+            hw.attachments_json,
+            hw.due_date,
+            hw.created_at,
+            hw.updated_at,
+            COALESCE(sub.status, hw.status, 'assigned') AS student_status,
+            sub.grade,
+            sub.submission_attachments_json,
+            sub.submitted_at,
+            sub.reviewed_at,
+            teacher.full_name AS teacher_name,
+            groups.name AS group_name
+          FROM homework_assignments hw
+          LEFT JOIN homework_submissions sub ON sub.assignment_id = hw.id AND sub.student_id = ?
+          INNER JOIN users teacher ON teacher.id = hw.teacher_id
+          LEFT JOIN groups ON groups.id = hw.group_id
+          LEFT JOIN group_memberships gm ON gm.group_id = hw.group_id AND gm.student_id = ?
+          WHERE hw.student_id = ? OR sub.student_id = ? OR gm.student_id = ?
+          ORDER BY COALESCE(hw.due_date, '9999-12-31') ASC, hw.updated_at DESC
+        `,
+        [req.user.id, req.user.id, req.user.id, req.user.id, req.user.id],
+      );
+
+      await Promise.all(rows.map((item) => ensureHomeworkSubmission(item.id, req.user.id, item.student_status || "assigned")));
+
+      res.json({
+        assignments: rows.map((item) => ({
+          id: item.id,
+          teacherId: item.teacher_id,
+          teacherName: item.teacher_name,
+          groupId: item.group_id || "",
+          groupName: item.group_name || "",
+          title: item.title,
+          description: item.description,
+          attachments: parseHomeworkAttachments(item.attachments_json),
+          dueDate: item.due_date || "",
+          status: item.student_status || "assigned",
+          statusLabel: homeworkStatusLabel(item.student_status),
+          grade: item.grade || "",
+          submissionAttachments: parseHomeworkAttachments(item.submission_attachments_json),
+          submittedAt: item.submitted_at || "",
+          reviewedAt: item.reviewed_at || "",
+          createdAt: item.created_at,
+          updatedAt: item.updated_at,
+        })),
+      });
+      return;
+    }
+
+    if (req.user.role !== "teacher") {
+      sendAuthError(res, 403, "Раздел доступен только преподавателю или ученику.", "forbidden");
+      return;
+    }
+
+    const rows = await all(
+      `
+        SELECT
+          hw.id,
+          hw.student_id,
+          hw.group_id,
+          hw.title,
+          hw.description,
+          hw.attachments_json,
+          hw.due_date,
+          hw.status,
+          hw.created_at,
+          hw.updated_at,
+          student.full_name AS student_name,
+          groups.name AS group_name,
+          SUM(CASE WHEN sub.status = 'assigned' OR sub.status IS NULL THEN 1 ELSE 0 END) AS assigned_count,
+          SUM(CASE WHEN sub.status = 'submitted' THEN 1 ELSE 0 END) AS submitted_count,
+          SUM(CASE WHEN sub.status = 'done' THEN 1 ELSE 0 END) AS done_count,
+          SUM(CASE WHEN sub.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
+          COUNT(sub.id) AS recipient_count
+        FROM homework_assignments hw
+        LEFT JOIN users student ON student.id = hw.student_id
+        LEFT JOIN groups ON groups.id = hw.group_id
+        LEFT JOIN homework_submissions sub ON sub.assignment_id = hw.id
+        WHERE hw.teacher_id = ?
+        GROUP BY hw.id
+        ORDER BY hw.updated_at DESC, COALESCE(hw.due_date, '9999-12-31') ASC
+      `,
+      [req.user.id],
+    );
+
+    const assignments = await Promise.all(
+      rows.map(async (item) => {
+        const recipients = await all(
+          `
+            SELECT u.id, u.full_name, sub.status, sub.grade, sub.submission_attachments_json, sub.submitted_at, sub.reviewed_at
+            FROM homework_submissions sub
+            INNER JOIN users u ON u.id = sub.student_id
+            WHERE sub.assignment_id = ?
+            ORDER BY u.full_name COLLATE NOCASE ASC
+          `,
+          [item.id],
+        );
+        const status =
+          item.cancelled_count > 0 && item.cancelled_count === item.recipient_count
+            ? "cancelled"
+            : item.submitted_count > 0
+              ? "submitted"
+              : item.recipient_count > 0 && item.done_count === item.recipient_count
+                ? "done"
+                : item.status || "assigned";
+
+        return {
+          id: item.id,
+          studentId: item.student_id || "",
+          studentName: item.student_name || "",
+          groupId: item.group_id || "",
+          groupName: item.group_name || "",
+          recipientName: item.group_name || item.student_name || "Без получателя",
+          title: item.title,
+          description: item.description,
+          attachments: parseHomeworkAttachments(item.attachments_json),
+          dueDate: item.due_date || "",
+          status,
+          statusLabel: homeworkStatusLabel(status),
+          recipientCount: item.recipient_count || (item.student_id ? 1 : 0),
+          submittedCount: item.submitted_count || 0,
+          doneCount: item.done_count || 0,
+          cancelledCount: item.cancelled_count || 0,
+          recipients: recipients.map((recipient) => ({
+            id: recipient.id,
+            fullName: recipient.full_name,
+            status: recipient.status || "assigned",
+            statusLabel: homeworkStatusLabel(recipient.status),
+            grade: recipient.grade || "",
+            submissionAttachments: parseHomeworkAttachments(recipient.submission_attachments_json),
+            submittedAt: recipient.submitted_at || "",
+            reviewedAt: recipient.reviewed_at || "",
+          })),
+          createdAt: item.created_at,
+          updatedAt: item.updated_at,
+        };
+      }),
+    );
+
+    res.json({ assignments });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/homework/:assignmentId/submit", requireSession, requireRole("student"), async (req, res, next) => {
+  try {
+    const payload = homeworkSubmitSchema.parse(req.body || {});
+    const assignment = await get(
+      `
+        SELECT hw.id, hw.teacher_id, hw.title, hw.student_id, hw.group_id
+        FROM homework_assignments hw
+        LEFT JOIN group_memberships gm ON gm.group_id = hw.group_id AND gm.student_id = ?
+        WHERE hw.id = ? AND (hw.student_id = ? OR gm.student_id = ?)
+        LIMIT 1
+      `,
+      [req.user.id, req.params.assignmentId, req.user.id, req.user.id],
+    );
+
+    if (!assignment) {
+      sendAuthError(res, 404, "Домашнее задание не найдено.", "homework_not_found");
+      return;
+    }
+
+    await ensureHomeworkSubmission(assignment.id, req.user.id);
+    const timestamp = new Date().toISOString();
+    const attachmentsJson = JSON.stringify(payload.attachments);
+    await run(
+      `
+        UPDATE homework_submissions
+        SET status = 'submitted', submission_attachments_json = ?, submitted_at = ?, updated_at = ?
+        WHERE assignment_id = ? AND student_id = ? AND status != 'cancelled'
+      `,
+      [attachmentsJson, timestamp, timestamp, assignment.id, req.user.id],
+    );
+
+    await createNotification(assignment.teacher_id, {
+      type: "homework_submitted",
+      title: "Домашнее задание на проверке",
+      body: `${req.user.fullName} отметил(а) задание «${assignment.title}» как выполненное.`,
+      link: "/students?tab=homework",
+      meta: {
+        assignmentId: assignment.id,
+        studentId: req.user.id,
+      },
+    });
+
+    res.json({ success: true, status: "submitted", statusLabel: homeworkStatusLabel("submitted") });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/homework/:assignmentId/review/:studentId", requireSession, requireRole("teacher"), async (req, res, next) => {
+  try {
+    const payload = homeworkReviewSchema.parse(req.body || {});
+    const assignment = await get(
+      `
+        SELECT id, title, teacher_id
+        FROM homework_assignments
+        WHERE id = ? AND teacher_id = ?
+        LIMIT 1
+      `,
+      [req.params.assignmentId, req.user.id],
+    );
+
+    if (!assignment) {
+      sendAuthError(res, 404, "Домашнее задание не найдено.", "homework_not_found");
+      return;
+    }
+
+    await ensureHomeworkSubmission(assignment.id, req.params.studentId);
+    const timestamp = new Date().toISOString();
+    await run(
+      `
+        UPDATE homework_submissions
+        SET status = 'done', grade = ?, reviewed_at = ?, updated_at = ?
+        WHERE assignment_id = ? AND student_id = ?
+      `,
+      [payload.grade, timestamp, timestamp, assignment.id, req.params.studentId],
+    );
+
+    await createNotification(req.params.studentId, {
+      type: "homework_reviewed",
+      title: "Домашнее задание проверено",
+      body: payload.grade ? `Задание «${assignment.title}» выполнено. Оценка: ${payload.grade}.` : `Задание «${assignment.title}» выполнено.`,
+      link: "/homework",
+      meta: {
+        assignmentId: assignment.id,
+        grade: payload.grade,
+      },
+    });
+
+    res.json({ success: true, status: "done", statusLabel: homeworkStatusLabel("done"), grade: payload.grade });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/homework/:assignmentId/cancel", requireSession, requireRole("teacher"), async (req, res, next) => {
+  try {
+    const assignment = await get(
+      `
+        SELECT id, title
+        FROM homework_assignments
+        WHERE id = ? AND teacher_id = ?
+        LIMIT 1
+      `,
+      [req.params.assignmentId, req.user.id],
+    );
+
+    if (!assignment) {
+      sendAuthError(res, 404, "Домашнее задание не найдено.", "homework_not_found");
+      return;
+    }
+
+    const timestamp = new Date().toISOString();
+    await run(`UPDATE homework_assignments SET status = 'cancelled', updated_at = ? WHERE id = ?`, [timestamp, assignment.id]);
+    await run(`UPDATE homework_submissions SET status = 'cancelled', updated_at = ? WHERE assignment_id = ?`, [timestamp, assignment.id]);
+    res.json({ success: true, status: "cancelled", statusLabel: homeworkStatusLabel("cancelled") });
   } catch (error) {
     next(error);
   }
@@ -2978,13 +3646,15 @@ app.post("/api/groups/:groupId/homework", requireSession, requireRole("teacher")
       [assignmentId, req.user.id, req.params.groupId, payload.title, payload.description, dueDate, timestamp, timestamp],
     );
 
+    await Promise.all(members.map((member) => ensureHomeworkSubmission(assignmentId, member.student_id)));
+
     await Promise.all(
       members.map((member) =>
         createNotification(member.student_id, {
           type: "group_homework_assigned",
-          title: `New group homework: ${group.name}`,
+          title: `Новое задание для группы: ${group.name}`,
           body: payload.title,
-          link: "/groups",
+          link: "/homework",
           meta: {
             assignmentId,
             groupId: req.params.groupId,
@@ -3237,7 +3907,7 @@ app.get("/api/notifications", requireSession, async (req, res, next) => {
     const [notifications, requests] = await Promise.all([
       all(
                   `
-          SELECT id, type, title, body, link, read_at, created_at
+          SELECT id, type, title, body, link, meta_json, read_at, created_at
           FROM app_notifications
           WHERE user_id = ?
           ORDER BY created_at DESC
@@ -3268,16 +3938,36 @@ app.get("/api/notifications", requireSession, async (req, res, next) => {
           ),
     ]);
 
-    res.json({
-      items: notifications.map((item) => ({
+    const notificationItems = await Promise.all(notifications.map(async (item) => {
+      const meta = parseJsonObject(item.meta_json);
+
+      if (item.type === "lesson_cancel_requested" && meta.requestId) {
+        const requestStatus = await get(
+          `
+            SELECT status
+            FROM lesson_cancellation_requests
+            WHERE id = ?
+            LIMIT 1
+          `,
+          [meta.requestId],
+        );
+        meta.status = requestStatus?.status || meta.status || "pending";
+      }
+
+      return {
         id: item.id,
         type: item.type,
         title: item.title,
         body: item.body,
         link: item.link || "",
+        meta,
         readAt: item.read_at,
         createdAt: item.created_at,
-      })),
+      };
+    }));
+
+    res.json({
+      items: notificationItems,
       unreadCount: await getUnreadNotificationCount(req.user.id),
       incomingRequests:
         req.user.role === "student"
@@ -3671,6 +4361,8 @@ app.post("/api/conversations/:id/messages", requireSession, async (req, res, nex
         createdAt: timestamp,
         senderId: req.user.id,
         senderName: req.user.fullName,
+        senderUsername: req.user.username || "",
+        senderAvatar: req.user.avatar || "",
         isOwn: true,
       },
     });
@@ -3683,6 +4375,22 @@ app.get("/api/schedule", requireSession, async (req, res, next) => {
   try {
     const requestedDate = req.query.date?.toString() || new Date().toISOString().slice(0, 10);
     const month = req.query.month?.toString() || requestedDate.slice(0, 7);
+    const [monthYear, monthNumber] = month.split("-").map(Number);
+    const firstMonthDay = new Date(monthYear, monthNumber - 1, 1);
+    const rangeStartDate = new Date(firstMonthDay);
+    rangeStartDate.setDate(firstMonthDay.getDate() - ((firstMonthDay.getDay() + 6) % 7));
+    const lastMonthDay = new Date(monthYear, monthNumber, 0);
+    const rangeEndDate = new Date(lastMonthDay);
+    rangeEndDate.setDate(lastMonthDay.getDate() + (6 - ((lastMonthDay.getDay() + 6) % 7)));
+    const selectedDate = new Date(`${requestedDate}T00:00:00`);
+    const weekStartDate = new Date(selectedDate);
+    weekStartDate.setDate(selectedDate.getDate() - ((selectedDate.getDay() + 6) % 7));
+    const weekEndDate = new Date(weekStartDate);
+    weekEndDate.setDate(weekStartDate.getDate() + 6);
+    const finalRangeStartDate = rangeStartDate < weekStartDate ? rangeStartDate : weekStartDate;
+    const finalRangeEndDate = rangeEndDate > weekEndDate ? rangeEndDate : weekEndDate;
+    const rangeStart = toDateKey(finalRangeStartDate);
+    const rangeEnd = toDateKey(finalRangeEndDate);
 
     const [entries, connectedUsers] = await Promise.all([
       all(
@@ -3703,10 +4411,11 @@ app.get("/api/schedule", requireSession, async (req, res, next) => {
             partner.role AS partner_role
           FROM schedule_entries e
           LEFT JOIN users partner ON partner.id = e.partner_id
-          WHERE e.user_id = ? AND substr(e.date, 1, 7) = ?
+          WHERE e.user_id = ? AND e.date >= ? AND e.date <= ?
+            AND e.status != 'cancelled'
           ORDER BY e.date ASC, e.start_hour ASC
         `,
-        [req.user.id, month],
+        [req.user.id, rangeStart, rangeEnd],
       ),
       getConnectedUsersForUser(req.user),
     ]);
@@ -3748,6 +4457,7 @@ app.get("/api/schedule", requireSession, async (req, res, next) => {
       month,
       selectedDate: requestedDate,
       overview: Object.values(overviewMap),
+      monthEntries: normalizedEntries,
       entries: selectedDayEntries,
       summary: {
         bookedHours: summary.bookedHours,
@@ -3771,68 +4481,63 @@ app.post("/api/schedule/entries", requireSession, async (req, res, next) => {
       return;
     }
 
-    const overlappingEntry = await findScheduleOverlap(
-      req.user.id,
-      payload.date,
-      payload.startHour,
-      payload.endHour,
-    );
+    const repeatWindowStart = toDateKey(new Date());
+    const repeatWindowEnd = addDaysToDateKey(repeatWindowStart, 30);
+    const occurrenceDates = [];
 
-    if (overlappingEntry) {
-      sendAuthError(res, 409, "This time range overlaps an existing entry.", "schedule_overlap");
-      return;
+    if (payload.repeatWeekly) {
+      let currentDate = payload.date;
+
+      while (currentDate <= repeatWindowEnd) {
+        if (currentDate >= repeatWindowStart) {
+          occurrenceDates.push(currentDate);
+        }
+
+        currentDate = addDaysToDateKey(currentDate, 7);
+      }
+
+      if (!occurrenceDates.length && payload.date >= repeatWindowStart) {
+        occurrenceDates.push(payload.date);
+      }
+    } else {
+      occurrenceDates.push(payload.date);
     }
 
-    if (payload.participantId) {
-      const participantOverlap = await findScheduleOverlap(
-        payload.participantId,
-        payload.date,
-        payload.startHour,
-        payload.endHour,
-      );
+    for (const date of occurrenceDates) {
+      const overlappingEntry = await findScheduleOverlap(req.user.id, date, payload.startHour, payload.endHour);
 
-      if (participantOverlap) {
-        sendAuthError(
-          res,
-          409,
-          "This time range overlaps an existing entry for the selected participant.",
-          "participant_schedule_overlap",
-        );
+      if (overlappingEntry) {
+        sendAuthError(res, 409, "This time range overlaps an existing entry.", "schedule_overlap");
         return;
+      }
+
+      if (payload.participantId) {
+        const participantOverlap = await findScheduleOverlap(
+          payload.participantId,
+          date,
+          payload.startHour,
+          payload.endHour,
+        );
+
+        if (participantOverlap) {
+          sendAuthError(
+            res,
+            409,
+            "This time range overlaps an existing entry for the selected participant.",
+            "participant_schedule_overlap",
+          );
+          return;
+        }
       }
     }
 
     const timestamp = new Date().toISOString();
-    const entryId = crypto.randomUUID();
-    const sharedEventId = payload.participantId ? crypto.randomUUID() : null;
+    const createdEntries = [];
+    const mirroredEntries = [];
 
-    await run(
-      `
-        INSERT INTO schedule_entries (
-          id, user_id, partner_id, shared_event_id, title, details, lesson_link, date, start_hour, end_hour, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        entryId,
-        req.user.id,
-        payload.participantId || null,
-        sharedEventId,
-        payload.title,
-        payload.details,
-        payload.lessonLink || null,
-        payload.date,
-        payload.startHour,
-        payload.endHour,
-        payload.status,
-        timestamp,
-        timestamp,
-      ],
-    );
-
-    let mirroredEntryId = null;
-
-    if (payload.participantId) {
-      mirroredEntryId = crypto.randomUUID();
+    for (const date of occurrenceDates) {
+      const entryId = crypto.randomUUID();
+      const sharedEventId = payload.participantId ? crypto.randomUUID() : null;
 
       await run(
         `
@@ -3841,14 +4546,14 @@ app.post("/api/schedule/entries", requireSession, async (req, res, next) => {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
-          mirroredEntryId,
-          payload.participantId,
+          entryId,
           req.user.id,
+          payload.participantId || null,
           sharedEventId,
           payload.title,
           payload.details,
           payload.lessonLink || null,
-          payload.date,
+          date,
           payload.startHour,
           payload.endHour,
           payload.status,
@@ -3856,56 +4561,10 @@ app.post("/api/schedule/entries", requireSession, async (req, res, next) => {
           timestamp,
         ],
       );
-    }
 
-    const participantEntry =
-      mirroredEntryId && payload.participantId
-        ? await getScheduleEntryDetails(mirroredEntryId, payload.participantId)
-        : null;
-
-    if (payload.participantId) {
-      await Promise.all([
-        createNotification(req.user.id, {
-          type: "lesson_scheduled",
-          title: "Lesson scheduled",
-          body: `${payload.title} was added to your schedule for ${payload.date} at ${String(payload.startHour).padStart(2, "0")}:00.`,
-          link: "/schedule",
-          meta: {
-            entryId,
-            participantId: payload.participantId,
-            sharedEventId,
-          },
-        }),
-        createNotification(payload.participantId, {
-          type: "lesson_scheduled",
-          title: "New lesson scheduled",
-          body: `${req.user.fullName} scheduled ${payload.title} for ${payload.date} at ${String(payload.startHour).padStart(2, "0")}:00.`,
-          link: "/schedule",
-          meta: {
-            entryId: mirroredEntryId,
-            participantId: req.user.id,
-            sharedEventId,
-          },
-        }),
-      ]);
-
-    } else {
-      await createNotification(req.user.id, {
-        type: "lesson_scheduled",
-        title: "Schedule updated",
-        body: `${payload.title} was added to your schedule for ${payload.date} at ${String(payload.startHour).padStart(2, "0")}:00.`,
-        link: "/schedule",
-        meta: {
-          entryId,
-          sharedEventId,
-        },
-      });
-    }
-
-    res.status(201).json({
-      entry: {
+      createdEntries.push({
         id: entryId,
-        date: payload.date,
+        date,
         startHour: payload.startHour,
         endHour: payload.endHour,
         sharedEventId,
@@ -3914,14 +4573,277 @@ app.post("/api/schedule/entries", requireSession, async (req, res, next) => {
         lessonLink: payload.lessonLink || "",
         status: payload.status,
         participantId: payload.participantId || null,
-      },
-      sharedEntry: participantEntry
+      });
+
+      if (payload.participantId) {
+        const mirroredEntryId = crypto.randomUUID();
+
+        await run(
+          `
+            INSERT INTO schedule_entries (
+              id, user_id, partner_id, shared_event_id, title, details, lesson_link, date, start_hour, end_hour, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            mirroredEntryId,
+            payload.participantId,
+            req.user.id,
+            sharedEventId,
+            payload.title,
+            payload.details,
+            payload.lessonLink || null,
+            date,
+            payload.startHour,
+            payload.endHour,
+            payload.status,
+            timestamp,
+            timestamp,
+          ],
+        );
+
+        mirroredEntries.push({
+          id: mirroredEntryId,
+          date,
+          participantId: payload.participantId,
+          sharedEventId,
+        });
+      }
+    }
+
+    const firstEntry = createdEntries[0];
+    const firstMirroredEntry = mirroredEntries[0] || null;
+    const repeatNote = payload.repeatWeekly ? " Weekly repeats were added." : "";
+
+    if (payload.participantId) {
+      await Promise.all([
+        createNotification(req.user.id, {
+          type: "lesson_scheduled",
+          title: "Lesson scheduled",
+          body: `${payload.title} was added to your schedule for ${payload.date} at ${String(payload.startHour).padStart(2, "0")}:00.${repeatNote}`,
+          link: "/schedule",
+          meta: {
+            entryId: firstEntry.id,
+            participantId: payload.participantId,
+            sharedEventId: firstEntry.sharedEventId,
+            repeatWeekly: payload.repeatWeekly,
+          },
+        }),
+        createNotification(payload.participantId, {
+          type: "lesson_scheduled",
+          title: "New lesson scheduled",
+          body: `${req.user.fullName} scheduled ${payload.title} for ${payload.date} at ${String(payload.startHour).padStart(2, "0")}:00.${repeatNote}`,
+          link: "/schedule",
+          meta: {
+            entryId: firstMirroredEntry?.id,
+            participantId: req.user.id,
+            sharedEventId: firstEntry.sharedEventId,
+            repeatWeekly: payload.repeatWeekly,
+          },
+        }),
+      ]);
+
+    } else {
+      await createNotification(req.user.id, {
+        type: "lesson_scheduled",
+        title: "Schedule updated",
+        body: `${payload.title} was added to your schedule for ${payload.date} at ${String(payload.startHour).padStart(2, "0")}:00.${repeatNote}`,
+        link: "/schedule",
+        meta: {
+          entryId: firstEntry.id,
+          sharedEventId: firstEntry.sharedEventId,
+          repeatWeekly: payload.repeatWeekly,
+        },
+      });
+    }
+
+    res.status(201).json({
+      entry: firstEntry,
+      entries: createdEntries,
+      sharedEntry: firstMirroredEntry
         ? {
-            id: participantEntry.id,
+            id: firstMirroredEntry.id,
             participantId: payload.participantId,
           }
         : null,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/schedule/entries/:entryId/cancel-request", requireSession, requireRole("student"), async (req, res, next) => {
+  try {
+    const payload = lessonCancellationRequestSchema.parse(req.body);
+    const entry = await get(
+      `
+        SELECT e.*, teacher.full_name AS teacher_name
+        FROM schedule_entries e
+        INNER JOIN users teacher ON teacher.id = e.partner_id
+        WHERE e.id = ? AND e.user_id = ? AND teacher.role = 'teacher'
+        LIMIT 1
+      `,
+      [req.params.entryId, req.user.id],
+    );
+
+    if (!entry) {
+      sendAuthError(res, 404, "Занятие не найдено.", "schedule_entry_not_found");
+      return;
+    }
+
+    if (entry.status === "cancelled") {
+      sendAuthError(res, 400, "Занятие уже отменено.", "lesson_already_cancelled");
+      return;
+    }
+
+    const existingRequest = await get(
+      `
+        SELECT id
+        FROM lesson_cancellation_requests
+        WHERE student_entry_id = ? AND status = 'pending'
+        LIMIT 1
+      `,
+      [entry.id],
+    );
+
+    if (existingRequest) {
+      sendAuthError(res, 409, "Запрос на отмену уже отправлен.", "cancel_request_exists");
+      return;
+    }
+
+    const teacherEntry = entry.shared_event_id
+      ? await get(
+          `
+            SELECT id
+            FROM schedule_entries
+            WHERE shared_event_id = ? AND user_id = ?
+            LIMIT 1
+          `,
+          [entry.shared_event_id, entry.partner_id],
+        )
+      : null;
+    const timestamp = new Date().toISOString();
+    const requestId = crypto.randomUUID();
+    const reason = payload.reason || "";
+
+    await run(
+      `
+        INSERT INTO lesson_cancellation_requests (
+          id, shared_event_id, student_entry_id, teacher_entry_id, student_id, teacher_id, reason, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+      `,
+      [
+        requestId,
+        entry.shared_event_id || null,
+        entry.id,
+        teacherEntry?.id || null,
+        req.user.id,
+        entry.partner_id,
+        reason,
+        timestamp,
+        timestamp,
+      ],
+    );
+
+    await createNotification(entry.partner_id, {
+      type: "lesson_cancel_requested",
+      title: "Запрос на отмену занятия",
+      body: `${req.user.fullName} просит отменить "${entry.title}" ${entry.date} в ${String(entry.start_hour).padStart(2, "0")}:00.${reason ? ` Причина: ${reason}` : ""}`,
+      link: "/notifications",
+      meta: {
+        requestId,
+        entryId: teacherEntry?.id || "",
+        studentEntryId: entry.id,
+        studentName: req.user.fullName,
+        lessonTitle: entry.title,
+        lessonDate: entry.date,
+        startHour: entry.start_hour,
+        endHour: entry.end_hour,
+        reason,
+        status: "pending",
+      },
+    });
+
+    res.status(201).json({ request: { id: requestId, status: "pending" } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/schedule/cancel-requests/:requestId/:action", requireSession, requireRole("teacher"), async (req, res, next) => {
+  try {
+    const action = req.params.action;
+
+    if (!["approve", "decline"].includes(action)) {
+      sendAuthError(res, 400, "Некорректное действие.", "invalid_action");
+      return;
+    }
+
+    const requestRecord = await get(
+      `
+        SELECT cr.*, student.full_name AS student_name, teacher_entry.title, teacher_entry.date, teacher_entry.start_hour, teacher_entry.end_hour
+        FROM lesson_cancellation_requests cr
+        INNER JOIN users student ON student.id = cr.student_id
+        LEFT JOIN schedule_entries teacher_entry ON teacher_entry.id = cr.teacher_entry_id
+        WHERE cr.id = ? AND cr.teacher_id = ? AND cr.status = 'pending'
+        LIMIT 1
+      `,
+      [req.params.requestId, req.user.id],
+    );
+
+    if (!requestRecord) {
+      sendAuthError(res, 404, "Запрос на отмену не найден.", "cancel_request_not_found");
+      return;
+    }
+
+    const timestamp = new Date().toISOString();
+    const nextStatus = action === "approve" ? "approved" : "declined";
+
+    await run(
+      `
+        UPDATE lesson_cancellation_requests
+        SET status = ?, updated_at = ?, responded_at = ?
+        WHERE id = ?
+      `,
+      [nextStatus, timestamp, timestamp, requestRecord.id],
+    );
+
+    if (action === "approve") {
+      if (requestRecord.shared_event_id) {
+        await run(
+          `
+            UPDATE schedule_entries
+            SET status = 'cancelled', updated_at = ?
+            WHERE shared_event_id = ?
+          `,
+          [timestamp, requestRecord.shared_event_id],
+        );
+      } else {
+        await run(
+          `
+            UPDATE schedule_entries
+            SET status = 'cancelled', updated_at = ?
+            WHERE id IN (?, ?)
+          `,
+          [timestamp, requestRecord.student_entry_id, requestRecord.teacher_entry_id || requestRecord.student_entry_id],
+        );
+      }
+    }
+
+    await createNotification(requestRecord.student_id, {
+      type: action === "approve" ? "lesson_cancel_approved" : "lesson_cancel_declined",
+      title: action === "approve" ? "Отмена занятия подтверждена" : "Отмена занятия отклонена",
+      body:
+        action === "approve"
+          ? `Преподаватель подтвердил отмену занятия "${requestRecord.title || "занятие"}".`
+          : `Преподаватель отклонил отмену занятия "${requestRecord.title || "занятие"}".`,
+      link: "/schedule",
+      meta: {
+        requestId: requestRecord.id,
+        status: nextStatus,
+      },
+    });
+
+    res.json({ success: true, status: nextStatus });
   } catch (error) {
     next(error);
   }

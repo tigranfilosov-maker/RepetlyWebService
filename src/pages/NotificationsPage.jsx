@@ -17,6 +17,7 @@ export function NotificationsPage() {
   const [incomingRequests, setIncomingRequests] = useState([]);
   const [outgoingRequests, setOutgoingRequests] = useState([]);
   const [error, setError] = useState("");
+  const [busyAction, setBusyAction] = useState("");
 
   async function loadData() {
     setError("");
@@ -47,6 +48,20 @@ export function NotificationsPage() {
     }
   }
 
+  async function handleCancelDecision(requestId, action) {
+    setError("");
+    setBusyAction(`${requestId}-${action}`);
+
+    try {
+      await authRequest(`/api/schedule/cancel-requests/${requestId}/${action}`, { method: "POST" });
+      await loadData();
+    } catch (requestError) {
+      setError(requestError.payload?.message || "Не удалось обработать отмену занятия.");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
   return (
     <AppLayout title="Уведомления" eyebrow="Система" contentMode="custom">
       <section className="dashboard-grid dashboard-grid--feature">
@@ -63,9 +78,34 @@ export function NotificationsPage() {
           <div className="management-list">
             {items.map((item) => (
               <div key={item.id} className="management-list__item">
-                <strong>{item.title}</strong>
-                <span>{item.body}</span>
-                <small>{formatDate(item.createdAt)}</small>
+                <div>
+                  <strong>{item.title}</strong>
+                  <span>{item.body}</span>
+                  <small>{formatDate(item.createdAt)}</small>
+                </div>
+                {user?.role === "teacher" && item.type === "lesson_cancel_requested" && item.meta?.status === "pending" ? (
+                  <div className="notification-card__actions">
+                    <button
+                      className="auth-submit notification-button"
+                      type="button"
+                      disabled={Boolean(busyAction)}
+                      onClick={() => handleCancelDecision(item.meta.requestId, "approve")}
+                    >
+                      Подтвердить
+                    </button>
+                    <button
+                      className="notification-button notification-button--decline"
+                      type="button"
+                      disabled={Boolean(busyAction)}
+                      onClick={() => handleCancelDecision(item.meta.requestId, "decline")}
+                    >
+                      Отклонить
+                    </button>
+                  </div>
+                ) : null}
+                {item.type === "lesson_cancel_requested" && item.meta?.status && item.meta.status !== "pending" ? (
+                  <span className="profile-badge">{item.meta.status === "approved" ? "Подтверждено" : "Отклонено"}</span>
+                ) : null}
               </div>
             ))}
             {!items.length ? <div className="empty-state">Новых уведомлений нет.</div> : null}

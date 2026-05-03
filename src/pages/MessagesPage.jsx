@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "../components/AppLayout";
 import { authRequest, useAuth } from "../auth/AuthContext";
@@ -10,6 +10,15 @@ const chatTimeFormatter = new Intl.DateTimeFormat("en-US", {
 
 function formatChatTime(value) {
   return chatTimeFormatter.format(new Date(value));
+}
+
+function getInitials(name) {
+  return String(name || "RP")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
 }
 
 function smoothScrollToBottom(element, duration = 200) {
@@ -40,7 +49,7 @@ function smoothScrollToBottom(element, duration = 200) {
 }
 
 export function MessagesPage() {
-  const { refreshUnreadSummary, user } = useAuth();
+  const { refreshUnreadSummary } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState("");
@@ -94,12 +103,6 @@ export function MessagesPage() {
           } else {
             openConversationByUserId(participantId).catch(() => {});
           }
-          return;
-        }
-
-        if (items[0]) {
-          setActiveConversationId(items[0].id);
-          setSearchParams({ conversationId: items[0].id });
         }
       })
       .catch(() => {});
@@ -107,16 +110,12 @@ export function MessagesPage() {
 
   useEffect(() => {
     if (!activeConversationId) {
+      setActiveConversation(null);
+      setMessages([]);
       return;
     }
 
-    loadConversation(activeConversationId)
-      .then(() => {
-        if (threadRef.current) {
-          threadRef.current.scrollTop = threadRef.current.scrollHeight;
-        }
-      })
-      .catch(() => {});
+    loadConversation(activeConversationId).catch(() => {});
 
     const intervalId = window.setInterval(() => {
       loadConversation(activeConversationId).catch(() => {});
@@ -168,43 +167,85 @@ export function MessagesPage() {
       : activeConversation?.participant?.fullName;
   const conversationSubtitle =
     activeConversation?.type === "group"
-      ? `${activeConversation.members?.length || 0} participants`
+      ? `${activeConversation.members?.length || 0} участников`
       : activeConversation?.participant?.subject
-        || (activeConversation?.participant?.role === "teacher" ? "Teacher" : "Student");
+        || (activeConversation?.participant?.role === "teacher" ? "Преподаватель" : "Ученик");
+  const membersById = useMemo(
+    () => new Map((activeConversation?.members || []).map((member) => [member.id, member])),
+    [activeConversation?.members],
+  );
+
+  function handleCloseMobileChat() {
+    setActiveConversationId("");
+    setActiveConversation(null);
+    setMessages([]);
+    setSearchParams({});
+  }
 
   return (
     <AppLayout title="Сообщения" contentMode="custom">
-      <section className="messages-layout messages-layout--swapped messages-layout--locked">
+      <section className={`messages-layout messages-layout--swapped messages-layout--locked${activeConversation ? " messages-layout--has-active" : ""}`}>
         <article className="panel chat-panel">
           {activeConversation ? (
             <>
-              <div className="chat-panel__header">
-                <div>
+              <div className={`chat-panel__header${activeConversation.type === "group" ? " chat-panel__header--group" : ""}`}>
+                <button className="chat-panel__back" type="button" aria-label="Back to dialogs" onClick={handleCloseMobileChat}>
+                  {"\u2190"}
+                </button>
+                <div className="chat-panel__title">
                   <h2>{conversationTitle}</h2>
-                  {conversationSubtitle ? <p>{conversationSubtitle}</p> : null}
+                  {activeConversation.type === "group" ? (
+                    <div className="chat-members-inline" aria-label="Group members">
+                      {activeConversation.members?.map((member) => (
+                        <span key={member.id} className="chat-members-inline__avatar" title={member.fullName}>
+                          {member.avatar ? <img src={member.avatar} alt="" /> : getInitials(member.fullName)}
+                        </span>
+                      ))}
+                      <span className="chat-members-inline__count">{conversationSubtitle}</span>
+                    </div>
+                  ) : conversationSubtitle ? (
+                    <p>{conversationSubtitle}</p>
+                  ) : null}
                 </div>
+                <span className="chat-panel__type">
+                  {activeConversation.type === "group" ? "\u0413\u0440\u0443\u043f\u043f\u0430" : "\u0427\u0430\u0442"}
+                </span>
               </div>
 
-              {activeConversation.type === "group" ? (
-                <div className="chat-members-inline">
-                  {activeConversation.members?.map((member) => (
-                    <span key={member.id} className="chat-members-inline__item">
-                      {member.fullName}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-
               <div ref={threadRef} className="chat-thread">
-                {messages.map((message) => (
-                  <div key={message.id} className={`chat-bubble${message.isOwn ? " chat-bubble--own" : ""}`}>
-                    {activeConversation.type === "group" && !message.isOwn ? <strong className="chat-bubble__sender">{message.senderName}</strong> : null}
-                    <p>{message.content}</p>
-                    <div className="chat-bubble__meta">
-                      <time dateTime={message.createdAt}>{formatChatTime(message.createdAt)}</time>
+                {messages.map((message) => {
+                  const sender = membersById.get(message.senderId);
+                  const senderName = message.senderName || sender?.fullName || "Участник";
+                  const senderUsername = message.senderUsername || sender?.username || "";
+                  const senderAvatar = message.senderAvatar || sender?.avatar || "";
+
+                  return (
+                    <div
+                      key={message.id}
+                      className={`chat-message${message.isOwn ? " chat-message--own" : ""}${
+                        activeConversation.type === "group" ? " chat-message--group" : ""
+                      }`}
+                    >
+                      {activeConversation.type === "group" && !message.isOwn ? (
+                        <span className="chat-message__avatar" title={senderName}>
+                          {senderAvatar ? <img src={senderAvatar} alt="" /> : getInitials(senderName)}
+                        </span>
+                      ) : null}
+                      <div className={`chat-bubble${message.isOwn ? " chat-bubble--own" : ""}`}>
+                        <p>{message.content}</p>
+                        {activeConversation.type === "group" && !message.isOwn ? (
+                          <strong className="chat-bubble__sender">
+                            {senderUsername ? `@${senderUsername}` : senderName}
+                          </strong>
+                        ) : null}
+                        <div className="chat-bubble__meta">
+                          <time dateTime={message.createdAt}>{formatChatTime(message.createdAt)}</time>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
+                {!messages.length ? <div className="messages-empty messages-empty--thread">{"\u0421\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0439 \u043f\u043e\u043a\u0430 \u043d\u0435\u0442."}</div> : null}
               </div>
 
               <form className="chat-input" onSubmit={handleSendMessage}>
@@ -212,17 +253,17 @@ export function MessagesPage() {
                   className="auth-input"
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
-                  placeholder={activeConversation.type === "group" ? "Message the whole group..." : "Type a message..."}
+                  placeholder={activeConversation.type === "group" ? "Сообщение всей группе..." : "Введите сообщение..."}
                 />
-                <button className="auth-submit" type="submit" disabled={isSending}>
-                  {isSending ? "Sending..." : "Send"}
+                <button className="chat-input__send" type="submit" disabled={isSending} aria-label="Отправить сообщение" title="Отправить сообщение">
+                  {isSending ? "..." : "↑"}
                 </button>
               </form>
             </>
           ) : (
             <div className="messages-empty">
-              <h2>No conversation selected</h2>
-              <p>Open a student card or a group card to jump into the right chat.</p>
+              <h2>Диалог не выбран</h2>
+              <p>Выберите диалог из списка, чтобы открыть чат.</p>
             </div>
           )}
         </article>
@@ -230,8 +271,8 @@ export function MessagesPage() {
         <article className="panel messages-panel">
           <div className="panel__head panel__head--tight">
             <div>
-              <h2>Dialogs</h2>
-              <p>Direct and group conversations appear together in one list.</p>
+              <h2>Диалоги</h2>
+              <p>Личные и групповые чаты собраны в одном списке.</p>
             </div>
           </div>
 
@@ -251,31 +292,23 @@ export function MessagesPage() {
                 }}
               >
                 <div className="conversation-list__avatar">
-                  {conversation.type === "group"
-                    ? "GR"
-                    : conversation.participant?.fullName
-                      ?.split(/\s+/)
-                      .filter(Boolean)
-                      .slice(0, 2)
-                      .map((part) => part[0]?.toUpperCase())
-                      .join("")}
+                  {conversation.type === "group" ? "GR" : getInitials(conversation.participant?.fullName)}
                 </div>
-                <div>
+                <div className="conversation-list__body">
                   <strong>{conversation.type === "group" ? conversation.title : conversation.participant?.fullName}</strong>
                   <span>
                     {conversation.type === "group"
-                      ? `${conversation.memberCount} members`
+                      ? `${conversation.memberCount} участников`
                       : conversation.participant?.subject
-                        || (conversation.participant?.username
-                          ? `@${conversation.participant.username}`
-                          : conversation.participant?.email)}
+                        || (conversation.participant?.role === "teacher" ? "\u041f\u0440\u0435\u043f\u043e\u0434\u0430\u0432\u0430\u0442\u0435\u043b\u044c" : "\u0423\u0447\u0435\u043d\u0438\u043a")}
                   </span>
-                  <small>{conversation.lastMessage || "Start the conversation"}</small>
+                  <em className="conversation-list__type">{conversation.type === "group" ? "Группа" : "Чат ученика"}</em>
+                  <small>{conversation.lastMessage || "Начните диалог"}</small>
                 </div>
                 {conversation.isUnread ? <span className="conversation-list__unread" /> : null}
               </button>
             ))}
-            {!conversations.length ? <div className="empty-state">Use Message on a student card or open a group chat to start.</div> : null}
+            {!conversations.length ? <div className="empty-state">Используйте кнопку сообщения в карточке ученика или откройте групповой чат.</div> : null}
           </div>
         </article>
       </section>

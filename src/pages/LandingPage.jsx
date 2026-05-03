@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { Link } from "react-router-dom";
-import calendarMainImage from "../assets/calendar-main-png.png";
+import landingMainShowcaseImage from "../assets/landing-main-showcase.png";
 import { SiteMark } from "../components/SiteMark";
 import { MoonIcon, SunIcon } from "../components/icons";
 import { useTheme } from "../theme/ThemeContext";
@@ -31,7 +31,7 @@ const supportCards = [
   },
   {
     title: "Готовность к расширению",
-    text: "Структура проекта уже подготовлена под дальнейшее развитие продукта, ролей, функций и внутренних разделов.",
+    text: "Структура проекта подготовлена под дальнейшее развитие продукта, ролей, функций и внутренних разделов.",
   },
 ];
 
@@ -45,7 +45,7 @@ const faqItems = [
     answer: "Частным репетиторам, преподавателям и будущим образовательным командам, которым нужен понятный цифровой кабинет.",
   },
   {
-    question: "Что делать дальше после landing page?",
+    question: "Что делать дальше после главной страницы?",
     answer: "Перейти к регистрации или авторизации, чтобы попасть в защищенную часть приложения и продолжить работу внутри системы.",
   },
 ];
@@ -68,7 +68,7 @@ export function LandingPage() {
           </div>
         </div>
 
-        <nav className="landing-nav" aria-label="Навигация landing page">
+        <nav className="landing-nav" aria-label="Навигация главной страницы">
           <a href="#benefits">Преимущества</a>
           <a href="#why-repetly">Почему Repetly</a>
           <a href="#faq">FAQ</a>
@@ -79,11 +79,11 @@ export function LandingPage() {
             type="button"
             className="landing-theme-toggle"
             onClick={toggleTheme}
-            aria-label={theme === "dark" ? "Переключить на светлую тему" : "Переключить на тёмную тему"}
-            title={theme === "dark" ? "Светлая тема" : "Тёмная тема"}
+            aria-label={theme === "dark" ? "Переключить на светлую тему" : "Переключить на темную тему"}
+            title={theme === "dark" ? "Светлая тема" : "Темная тема"}
           >
             {theme === "dark" ? <SunIcon /> : <MoonIcon />}
-            <span>{theme === "dark" ? "Light" : "Dark"}</span>
+            <span>{theme === "dark" ? "Светлая" : "Темная"}</span>
           </button>
           <Link className="landing-button landing-button--ghost" to="/sign-in">
             Вход
@@ -114,7 +114,7 @@ export function LandingPage() {
           </div>
 
           <div className="landing-showcase">
-            <img className="landing-showcase__image" src={calendarMainImage} alt="Календарь Repetly" />
+            <img className="landing-showcase__image" src={landingMainShowcaseImage} alt="Repetly на ноутбуке и телефоне" />
           </div>
         </section>
 
@@ -139,7 +139,7 @@ export function LandingPage() {
           <div className="landing-section-heading">
             <p className="eyebrow">Почему Repetly</p>
             <h2>Почему пользователи выбирают такой формат</h2>
-            <p>Платформа объясняет ценность быстро: чистый вход, понятная структура, единая точка начала работы.</p>
+            <p>Платформа объясняет ценность быстро: чистый вход, понятная структура и единая точка начала работы.</p>
           </div>
 
           <div className="landing-support__grid">
@@ -193,16 +193,19 @@ export function LandingPage() {
           <section>
             <h3>Полезные ссылки</h3>
             <div className="landing-footer__links">
-              <Link to="/sign-in">Вход</Link>
-              <Link to="/sign-up">Регистрация</Link>
               <a href="#benefits">Преимущества</a>
               <a href="#why-repetly">Почему Repetly</a>
+              <Link to="/public-offer">Публичная оферта</Link>
+              <Link to="/privacy-policy">Политика конфиденциальности</Link>
             </div>
           </section>
 
           <section>
             <h3>О проекте</h3>
-            <p>Repetly создается как SaaS-продукт для репетиторов с современным, понятным и профессиональным пользовательским опытом.</p>
+            <p>
+              Repetly создается как SaaS-продукт для репетиторов с современным, понятным и профессиональным
+              пользовательским опытом.
+            </p>
             <p className="landing-footer__meta">Repetly, all rights reserved</p>
           </section>
         </div>

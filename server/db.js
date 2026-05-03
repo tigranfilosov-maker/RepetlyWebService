@@ -347,6 +347,26 @@ export async function initializeDatabase() {
   await ensureColumn("schedule_entries", "lesson_link", "lesson_link TEXT");
 
   await run(`
+    CREATE TABLE IF NOT EXISTS lesson_cancellation_requests (
+      id TEXT PRIMARY KEY,
+      shared_event_id TEXT,
+      student_entry_id TEXT NOT NULL,
+      teacher_entry_id TEXT,
+      student_id TEXT NOT NULL,
+      teacher_id TEXT NOT NULL,
+      reason TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      responded_at TEXT,
+      FOREIGN KEY(student_entry_id) REFERENCES schedule_entries(id) ON DELETE CASCADE,
+      FOREIGN KEY(teacher_entry_id) REFERENCES schedule_entries(id) ON DELETE SET NULL,
+      FOREIGN KEY(student_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY(teacher_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS telegram_connections (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL UNIQUE,
@@ -463,6 +483,7 @@ export async function initializeDatabase() {
       group_id TEXT,
       title TEXT NOT NULL,
       description TEXT NOT NULL,
+      attachments_json TEXT,
       due_date TEXT,
       status TEXT NOT NULL DEFAULT 'assigned',
       created_at TEXT NOT NULL,
@@ -472,6 +493,26 @@ export async function initializeDatabase() {
       FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE
     )
   `);
+  await ensureColumn("homework_assignments", "attachments_json", "attachments_json TEXT");
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS homework_submissions (
+      id TEXT PRIMARY KEY,
+      assignment_id TEXT NOT NULL,
+      student_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'assigned',
+      grade TEXT,
+      submission_attachments_json TEXT,
+      submitted_at TEXT,
+      reviewed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(assignment_id, student_id),
+      FOREIGN KEY(assignment_id) REFERENCES homework_assignments(id) ON DELETE CASCADE,
+      FOREIGN KEY(student_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+  await ensureColumn("homework_submissions", "submission_attachments_json", "submission_attachments_json TEXT");
 
   await run(`
     CREATE INDEX IF NOT EXISTS idx_conversation_members_user
@@ -496,6 +537,16 @@ export async function initializeDatabase() {
   await run(`
     CREATE INDEX IF NOT EXISTS idx_schedule_entries_shared_event
     ON schedule_entries (shared_event_id)
+  `);
+
+  await run(`
+    CREATE INDEX IF NOT EXISTS idx_lesson_cancellation_requests_teacher
+    ON lesson_cancellation_requests (teacher_id, status, created_at DESC)
+  `);
+
+  await run(`
+    CREATE INDEX IF NOT EXISTS idx_lesson_cancellation_requests_student_entry
+    ON lesson_cancellation_requests (student_entry_id, status)
   `);
 
   await run(`
@@ -557,6 +608,16 @@ export async function initializeDatabase() {
   await run(`
     CREATE INDEX IF NOT EXISTS idx_homework_assignments_group
     ON homework_assignments (group_id, due_date)
+  `);
+
+  await run(`
+    CREATE INDEX IF NOT EXISTS idx_homework_submissions_student
+    ON homework_submissions (student_id, status, updated_at DESC)
+  `);
+
+  await run(`
+    CREATE INDEX IF NOT EXISTS idx_homework_submissions_assignment
+    ON homework_submissions (assignment_id, status)
   `);
 
   await run(`

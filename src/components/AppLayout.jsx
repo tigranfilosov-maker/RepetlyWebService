@@ -1,12 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { authRequest, useAuth } from "../auth/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import { useTheme } from "../theme/ThemeContext";
 import { getNavigationItemsForRole } from "../routeMeta";
 import { SiteMark } from "./SiteMark";
-import { LanguageSwitcher } from "./LanguageSwitcher";
-import { BellIcon, LogoutIcon, MoonIcon, SearchIcon, SidebarToggleIcon, SunIcon } from "./icons";
+import { BellIcon, LogoutIcon, MoonIcon, SearchIcon, SunIcon } from "./icons";
 
 function PlaceholderCard({ className = "" }) {
   return (
@@ -22,7 +21,7 @@ function getFirstName(fullName) {
   return String(fullName || "").trim().split(/\s+/)[0] || "Thomas";
 }
 
-function Sidebar({ collapsed, isMobile, isOpen, onClose, onToggle }) {
+function Sidebar({ onClose }) {
   const navigate = useNavigate();
   const { signOut, unreadChats, user } = useAuth();
   const { t } = useI18n();
@@ -36,8 +35,7 @@ function Sidebar({ collapsed, isMobile, isOpen, onClose, onToggle }) {
 
   return (
     <aside
-      className={`sidebar${user?.role === "teacher" ? " sidebar--teacher" : ""}${collapsed ? " sidebar--collapsed" : ""}${isMobile ? " sidebar--mobile" : ""}${isOpen ? " sidebar--open" : ""}`}
-      aria-hidden={isMobile && !isOpen}
+      className={`sidebar sidebar--collapsed${user?.role === "teacher" ? " sidebar--teacher" : ""}`}
     >
       <div className="sidebar__top">
         <div className="brand">
@@ -48,18 +46,6 @@ function Sidebar({ collapsed, isMobile, isOpen, onClose, onToggle }) {
         </div>
 
         <div className="sidebar__menu">
-          {!isMobile ? (
-            <button
-              className={`sidebar__toggle${collapsed ? " sidebar__toggle--collapsed" : ""}`}
-              type="button"
-              onClick={onToggle}
-              aria-label={collapsed ? t("layout.expandSidebar") : t("layout.collapseSidebar")}
-              title={collapsed ? t("layout.expandSidebar") : t("layout.collapseSidebar")}
-            >
-              <SidebarToggleIcon />
-            </button>
-          ) : null}
-
           <nav className="sidebar__nav" aria-label={t("layout.mainNavigation")}>
             {navigationItems.map((item) => {
               const Icon = item.icon;
@@ -72,11 +58,6 @@ function Sidebar({ collapsed, isMobile, isOpen, onClose, onToggle }) {
                   className={({ isActive }) => `nav-link${isActive ? " nav-link--active" : ""}`}
                   aria-label={item.label}
                   title={item.label}
-                  onClick={() => {
-                    if (isMobile) {
-                      onClose?.();
-                    }
-                  }}
                 >
                   <span className="nav-link__icon">
                     <Icon />
@@ -104,15 +85,23 @@ function Sidebar({ collapsed, isMobile, isOpen, onClose, onToggle }) {
   );
 }
 
-function Header({ title, isMobile, isSidebarOpen, onSidebarToggle }) {
+function Header({ title }) {
   const location = useLocation();
-  const { refreshUnreadSummary, unreadNotifications, user } = useAuth();
+  const navigate = useNavigate();
+  const { refreshUnreadSummary, signOut, unreadNotifications, user } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const { t, language } = useI18n();
+  const { t } = useI18n();
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [notificationItems, setNotificationItems] = useState([]);
   const [now, setNow] = useState(() => new Date());
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [students, setStudents] = useState([]);
+  const [studentsLoaded, setStudentsLoaded] = useState(false);
   const popoverRef = useRef(null);
+  const profileMenuRef = useRef(null);
+  const searchRef = useRef(null);
   const initials =
     user?.fullName
       ?.split(/\s+/)
@@ -123,7 +112,7 @@ function Header({ title, isMobile, isSidebarOpen, onSidebarToggle }) {
   const isHome = location.pathname === "/app";
   const primaryLabel = isHome ? t("layout.hi", { name: getFirstName(user?.fullName) }) : title;
   const secondaryLabel = isHome ? t("layout.gladToSeeYou") : user?.roleLabel || user?.email || t("common.workspace");
-  const locale = language === "ru" ? "ru-RU" : "en-US";
+  const locale = "ru-RU";
   const timeLabel = new Intl.DateTimeFormat(locale, {
     hour: "numeric",
     minute: "2-digit",
@@ -139,11 +128,34 @@ function Header({ title, isMobile, isSidebarOpen, onSidebarToggle }) {
       if (!popoverRef.current?.contains(event.target)) {
         setNotificationsOpen(false);
       }
+
+      if (!searchRef.current?.contains(event.target)) {
+        setSearchOpen(false);
+      }
+
+      if (!profileMenuRef.current?.contains(event.target)) {
+        setProfileMenuOpen(false);
+      }
     }
 
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    if (!searchOpen || studentsLoaded || user?.role !== "teacher") {
+      return;
+    }
+
+    authRequest("/api/teacher-students")
+      .then((data) => {
+        setStudents(data.students || []);
+        setStudentsLoaded(true);
+      })
+      .catch(() => {
+        setStudentsLoaded(true);
+      });
+  }, [searchOpen, studentsLoaded, user?.role]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
@@ -167,30 +179,85 @@ function Header({ title, isMobile, isSidebarOpen, onSidebarToggle }) {
     setNotificationItems(data.items || []);
   }
 
+  const searchResults = useMemo(() => {
+    const normalized = searchQuery.trim().toLowerCase();
+
+    if (!normalized) {
+      return [];
+    }
+
+    const items = [
+      ...getNavigationItemsForRole(user?.role || "teacher", t).map((item) => ({
+        label: item.label,
+        path: item.path,
+        section: "Раздел",
+        keywords: [item.label],
+      })),
+      { label: "Ученики", path: "/students?tab=students", section: "Вкладка", keywords: ["ученики", "студенты", "мои ученики"] },
+      { label: "Домашние задания", path: "/students?tab=homework", section: "Вкладка", keywords: ["домашние задания", "дз", "д/з", "задания"] },
+      { label: "Мои домашние задания", path: "/homework", section: "Раздел", keywords: ["домашние задания", "дз", "мои задания"] },
+      { label: "Группы", path: "/students?tab=groups", section: "Вкладка", keywords: ["группы", "группа"] },
+      { label: "Никнейм", path: "/profile", section: "Профиль", keywords: ["никнейм", "username", user?.username || ""] },
+      { label: "Имя", path: "/profile", section: "Профиль", keywords: ["имя", "профиль", user?.fullName || ""] },
+      { label: "Почта", path: "/profile", section: "Профиль", keywords: ["почта", "email", user?.email || ""] },
+      { label: "Настройки Telegram", path: "/profile?tab=telegram", section: "Профиль", keywords: ["telegram", "телеграм", "бот"] },
+      ...students.map((student) => ({
+        label: student.fullName,
+        path: `/students?tab=students&studentId=${encodeURIComponent(student.id)}`,
+        section: "Ученики",
+        keywords: [student.fullName, student.username || "", student.email || "", student.subject || ""],
+      })),
+    ];
+
+    return items
+      .filter((item) => item.keywords.some((keyword) => String(keyword).toLowerCase().includes(normalized)))
+      .slice(0, 8);
+  }, [searchQuery, students, t, user]);
+
+  function openSearchResult(result) {
+    navigate(result.path);
+    setSearchQuery("");
+    setSearchOpen(false);
+  }
+
+  async function handleProfileSignOut() {
+    await signOut();
+    setProfileMenuOpen(false);
+    navigate("/");
+  }
+
   return (
     <header className="topbar">
       <div className="topbar__left">
-        {isMobile ? (
-          <button
-            className="topbar__menu-toggle"
-            type="button"
-            onClick={onSidebarToggle}
-            aria-label={isSidebarOpen ? t("layout.closeMenu") : t("layout.openMenu")}
-            title={isSidebarOpen ? t("layout.closeMenu") : t("layout.openMenu")}
-          >
-            <SidebarToggleIcon />
-          </button>
-        ) : null}
-
         <div className="topbar__welcome">
           <strong>{primaryLabel}</strong>
           <span>{secondaryLabel}</span>
         </div>
 
-        <label className="topbar__search" aria-label={t("common.search")}>
+        <div ref={searchRef} className="topbar__search" aria-label={t("common.search")}>
           <SearchIcon />
-          <input type="search" placeholder={t("common.search")} />
-        </label>
+          <input
+            type="search"
+            placeholder={t("common.search")}
+            value={searchQuery}
+            onChange={(event) => {
+              setSearchQuery(event.target.value);
+              setSearchOpen(true);
+            }}
+            onFocus={() => setSearchOpen(true)}
+          />
+          {searchOpen && searchQuery.trim() ? (
+            <div className="topbar-search-menu">
+              {searchResults.map((result) => (
+                <button key={`${result.section}-${result.label}-${result.path}`} type="button" className="topbar-search-menu__item" onClick={() => openSearchResult(result)}>
+                  <span>{result.section}</span>
+                  <strong>{result.label}</strong>
+                </button>
+              ))}
+              {!searchResults.length ? <div className="topbar-search-menu__empty">Ничего не найдено</div> : null}
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <div className="topbar__right">
@@ -203,9 +270,6 @@ function Header({ title, isMobile, isSidebarOpen, onSidebarToggle }) {
         >
           {theme === "dark" ? <SunIcon /> : <MoonIcon />}
         </button>
-
-        <LanguageSwitcher />
-
         <div ref={popoverRef} className="notification-popover">
           <button className="icon-button" type="button" aria-label={t("layout.notifications")} onClick={handleBellClick}>
             <BellIcon />
@@ -242,11 +306,39 @@ function Header({ title, isMobile, isSidebarOpen, onSidebarToggle }) {
           <span>{dateLabel}</span>
         </div>
 
-        <Link className="profile-block profile-block--button" to="/profile" aria-label={t("layout.openProfile")} title={t("layout.openProfile")}>
-          <div className="profile-block__avatar" aria-hidden="true">
-            {user?.avatar ? <img src={user.avatar} alt={user.fullName} /> : initials}
-          </div>
-        </Link>
+        <div ref={profileMenuRef} className="profile-menu">
+          <button
+            className="profile-block profile-block--button"
+            type="button"
+            aria-label={t("layout.openProfile")}
+            title={t("layout.openProfile")}
+            onClick={() => setProfileMenuOpen((current) => !current)}
+          >
+            <div className="profile-block__avatar" aria-hidden="true">
+              {user?.avatar ? <img src={user.avatar} alt={user.fullName} /> : initials}
+            </div>
+          </button>
+
+          {profileMenuOpen ? (
+            <div className="profile-menu__panel">
+              <button type="button" onClick={() => {
+                setProfileMenuOpen(false);
+                navigate("/profile");
+              }}>
+                Профиль
+              </button>
+              <button type="button" onClick={() => {
+                setProfileMenuOpen(false);
+                navigate("/profile?tab=telegram");
+              }}>
+                Настройки
+              </button>
+              <button className="profile-menu__logout" type="button" onClick={handleProfileSignOut}>
+                Выйти
+              </button>
+            </div>
+          ) : null}
+        </div>
       </div>
     </header>
   );
@@ -305,74 +397,16 @@ function ContentSkeleton({ title, sectionLayout }) {
   );
 }
 
-export function AppLayout({ title, sectionLayout, contentMode = "default", children = null }) {
-  const location = useLocation();
+export function AppLayout({ title, sectionLayout, contentMode = "default", contentClassName = "", children = null }) {
   const shouldRenderCustomContent = contentMode !== "default";
-  const { t } = useI18n();
-  const [isMobile, setIsMobile] = useState(() => (typeof window !== "undefined" ? window.innerWidth <= 900 : false));
-  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-
-    return window.localStorage.getItem("sidebar-collapsed") === "true";
-  });
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return undefined;
-    }
-
-    const mediaQuery = window.matchMedia("(max-width: 900px)");
-    const handleChange = (event) => setIsMobile(event.matches);
-
-    setIsMobile(mediaQuery.matches);
-    mediaQuery.addEventListener("change", handleChange);
-
-    return () => mediaQuery.removeEventListener("change", handleChange);
-  }, []);
-
-  useEffect(() => {
-    if (!isMobile) {
-      setIsMobileSidebarOpen(false);
-    }
-  }, [isMobile]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.localStorage.setItem("sidebar-collapsed", String(isSidebarCollapsed));
-  }, [isSidebarCollapsed]);
-
-  useEffect(() => {
-    setIsMobileSidebarOpen(false);
-  }, [location.pathname]);
 
   return (
-    <div className={`app-shell${!isMobile && isSidebarCollapsed ? " app-shell--sidebar-collapsed" : ""}${isMobile ? " app-shell--mobile" : ""}`}>
-      {isMobile && isMobileSidebarOpen ? (
-        <button className="sidebar-backdrop" type="button" aria-label={t("layout.closeMenu")} onClick={() => setIsMobileSidebarOpen(false)} />
-      ) : null}
-
-      <Sidebar
-        collapsed={!isMobile && isSidebarCollapsed}
-        isMobile={isMobile}
-        isOpen={!isMobile || isMobileSidebarOpen}
-        onClose={() => setIsMobileSidebarOpen(false)}
-        onToggle={() => setIsSidebarCollapsed((current) => !current)}
-      />
+    <div className="app-shell app-shell--sidebar-collapsed">
+      <Sidebar onClose={() => undefined} />
 
       <main className="content">
-        <Header
-          title={title}
-          isMobile={isMobile}
-          isSidebarOpen={isMobileSidebarOpen}
-          onSidebarToggle={() => setIsMobileSidebarOpen((current) => !current)}
-        />
-        <div className="content__body">
+        <Header title={title} />
+        <div className={`content__body${contentClassName ? ` ${contentClassName}` : ""}`}>
           {shouldRenderCustomContent ? children : <ContentSkeleton title={title} sectionLayout={sectionLayout} />}
         </div>
       </main>

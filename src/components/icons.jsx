@@ -20,6 +20,10 @@ export const StudentsIcon = createIcon(
   "M16 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-8 2a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm8 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4ZM8 15c-.29 0-.62.01-.97.04C4.76 15.22 1 16.36 1 19v2h5v-2c0-1.48.81-2.92 2.24-4Z",
 );
 
+export const HomeworkIcon = createIcon(
+  "M5 3h8a3 3 0 0 1 3 3v15H7a3 3 0 0 0-2 .76V3Zm2 3v11.1A4.98 4.98 0 0 1 9 17h5V6a1 1 0 0 0-1-1H7v1Zm11 2h1a2 2 0 0 1 2 2v11h-3V8ZM8.5 8h4v2h-4V8Zm0 4h4v2h-4v-2Z",
+);
+
 export const ScheduleIcon = createIcon(
   "M7 2v2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7Zm12 8H5v8h14v-8Z",
 );

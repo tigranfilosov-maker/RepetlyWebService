@@ -1,480 +1,471 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { AppLayout } from "../components/AppLayout";
-import { CloseIcon, ReplaceIcon } from "../components/icons";
+import {
+  AnalyticsIcon,
+  BoardIcon,
+  FinanceIcon,
+  MessageIcon,
+  ScheduleIcon,
+  StudentsIcon,
+} from "../components/icons";
 import { authRequest, useAuth } from "../auth/AuthContext";
+import logoImage from "../assets/logo.png";
 
-const STAT_SLOT_KEYS = ["stats-1", "stats-2", "stats-3"];
-const CONTENT_SLOT_KEYS = ["feature-main", "side-top", "side-bottom"];
-const WEEK_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DEFAULT_BLOCK_ORDER = [
+  "day",
+  "quick",
+  "lessons",
+  "messages",
+  "finance",
+  "homework",
+  "analytics",
+  "progress",
+];
+
+function toLocalIsoDate(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
 
 function formatDate(value) {
   return new Date(`${value}T00:00:00`).toLocaleDateString("ru-RU", {
     day: "numeric",
-    month: "long",
+    month: "short",
   });
 }
 
-function buildTrendPoints(summary) {
-  const base = [
-    Math.max(1, summary?.todaysLessons ?? 1),
-    Math.max(2, (summary?.todaysLessons ?? 0) + 2),
-    Math.max(3, Math.ceil((summary?.lessonsThisWeek ?? 0) / 2)),
-    Math.max(2, summary?.pendingRequests ?? 2),
-    Math.max(3, Math.ceil((summary?.freeHoursToday ?? 0) / 4)),
-    Math.max(2, Math.ceil((summary?.unreadMessages ?? 0) / 2)),
-    Math.max(1, Math.ceil((summary?.connectedCount ?? 0) / 2)),
-  ];
-  const max = Math.max(...base, 1);
-
-  return base.map((value, index) => ({
-    day: WEEK_DAYS[index],
-    value,
-    label: `${value}h`,
-    normalized: value / max,
-  }));
+function formatMonthDay(date) {
+  return date.toLocaleDateString("ru-RU", {
+    day: "numeric",
+    month: "long",
+    weekday: "long",
+  });
 }
 
-function buildCurvePath(points, width, height) {
-  if (!points.length) {
+function formatTimeAgo(value) {
+  if (!value) {
     return "";
   }
 
-  const xStep = width / Math.max(points.length - 1, 1);
+  const diffMinutes = Math.max(1, Math.round((Date.now() - new Date(value).getTime()) / 60000));
 
-  return points
-    .map((point, index) => {
-      const x = index * xStep;
-      const y = height - point.normalized * (height - 36) - 18;
-      return `${index === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`;
-    })
-    .join(" ");
+  if (diffMinutes < 60) {
+    return `${diffMinutes} мин`;
+  }
+
+  const hours = Math.round(diffMinutes / 60);
+  return `${hours} ч`;
 }
 
-function DashboardSlotFrame({ slot, title, children, onChange, onRemove, isBusy }) {
+function formatHours(value) {
+  const number = Number(value || 0);
+  return `${Number.isInteger(number) ? number : number.toFixed(1)} ч`;
+}
+
+function getHomeworkStatusLabel(status) {
+  const labels = {
+    assigned: "Выдано",
+    submitted: "На проверке",
+    done: "Выполнено",
+    cancelled: "Отменено",
+  };
+
+  return labels[status] || "Выдано";
+}
+
+function getInitials(name) {
+  return String(name || "RP")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
+}
+
+function getStoredOrder(userId) {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(`repetly-home-order-${userId}`) || "[]");
+    const valid = parsed.filter((key) => DEFAULT_BLOCK_ORDER.includes(key));
+    return [...valid, ...DEFAULT_BLOCK_ORDER.filter((key) => !valid.includes(key))];
+  } catch {
+    return DEFAULT_BLOCK_ORDER;
+  }
+}
+
+function DashboardCard({ id, className = "", children, dragState, onDragStart, onDragEnter, onDragEnd }) {
   return (
-    <article className={`panel dashboard-widget dashboard-widget--${slot.size} dashboard-widget--type-${slot.widgetType || "empty"}`}>
-      {slot.widgetType ? (
-        <div className="dashboard-widget__controls">
-          <span className="dashboard-widget__eyebrow">{title}</span>
-          <div className="dashboard-widget__actions">
-            <button
-              type="button"
-              className="dashboard-widget__icon-action"
-              onClick={() => onChange(slot)}
-              disabled={isBusy}
-              aria-label={`Заменить виджет ${title}`}
-              title="Заменить виджет"
-            >
-              <ReplaceIcon />
-            </button>
-            <button
-              type="button"
-              className="dashboard-widget__icon-action dashboard-widget__icon-action--danger"
-              onClick={() => onRemove(slot.key)}
-              disabled={isBusy}
-              aria-label={`Удалить виджет ${title}`}
-              title="Удалить виджет"
-            >
-              <CloseIcon />
-            </button>
-          </div>
-        </div>
-      ) : null}
+    <article
+      className={`home-board-card home-board-card--${id}${className ? ` ${className}` : ""}${dragState === id ? " home-board-card--dragging" : ""}`}
+      draggable
+      onDragStart={(event) => onDragStart(event, id)}
+      onDragEnter={(event) => onDragEnter(event, id)}
+      onDragOver={(event) => event.preventDefault()}
+      onDragEnd={onDragEnd}
+    >
+      <span className="home-board-card__grab" aria-hidden="true">⋮⋮</span>
       {children}
     </article>
   );
 }
 
-function EmptyDashboardSlot({ slot, onAdd, isBusy }) {
+function CardHead({ icon: Icon, title, text, action }) {
   return (
-    <div className={`dashboard-slot dashboard-slot--empty dashboard-slot--${slot.size}`}>
-      <button
-        type="button"
-        className="dashboard-slot__add-button"
-        onClick={() => onAdd(slot)}
-        disabled={isBusy}
-        aria-label={`Добавить виджет в слот ${slot.key}`}
-        title="Добавить виджет"
-      >
-        <span className="dashboard-slot__plus" aria-hidden="true">
-          +
-        </span>
-        <span className="dashboard-slot__sr-only">Добавить виджет</span>
-      </button>
+    <div className="home-card-head">
+      <span className="home-card-head__icon">{Icon ? <Icon /> : null}</span>
+      <div>
+        <h2>{title}</h2>
+        {text ? <p>{text}</p> : null}
+      </div>
+      {action ? <div className="home-card-head__action">{action}</div> : null}
     </div>
   );
 }
 
-function WidgetPicker({ slot, onClose, onSelect, isBusy }) {
-  if (!slot) {
-    return null;
-  }
+function DayBlock({ summary, todayEntries }) {
+  const today = new Date();
+  const checkingCount = Number(summary?.homeworkReviewCount || 0);
+  const pendingMessages = Number(summary?.unreadMessages || 0);
 
   return (
-    <div className="dashboard-picker">
-      <button type="button" className="dashboard-picker__backdrop" aria-label="Закрыть выбор виджета" onClick={onClose} />
-      <div className="panel dashboard-picker__dialog">
-        <div className="dashboard-picker__head">
-          <div>
-            <span className="dashboard-widget__eyebrow">Слот {slot.key}</span>
-            <h2>Выбери виджет</h2>
-            <p>Каждый блок сохраняется как отдельный виджет и может быть заменён в любой момент.</p>
+    <>
+      <CardHead icon={ScheduleIcon} title="Главное за день" text={formatMonthDay(today)} />
+      <div className="home-day-layout">
+        <div className="home-day-list">
+          <div className="home-day-row">
+            <ScheduleIcon />
+            <strong>{todayEntries.length} занятия сегодня</strong>
+            <span>{todayEntries[0] ? `${todayEntries[0].startHour}:00 - ${todayEntries[todayEntries.length - 1].endHour}:00` : "Свободный день"}</span>
           </div>
-          <button type="button" className="dashboard-widget__action" onClick={onClose}>
-            Закрыть
-          </button>
+          <div className="home-day-row">
+            <BoardIcon />
+            <strong>Проверить {checkingCount} задания</strong>
+            <span>{checkingCount ? "Есть работы на проверке" : "Очередь проверки пуста"}</span>
+          </div>
+          <div className="home-day-row">
+            <MessageIcon />
+            <strong>Ответить на {pendingMessages} сообщения</strong>
+            <span>{pendingMessages ? "Есть новые сообщения" : "Новых сообщений нет"}</span>
+          </div>
+          <div className="home-day-row">
+            <FinanceIcon />
+            <strong>Финансы</strong>
+            <span>{formatHours(summary?.completedHours || 0)} проведено в этом месяце</span>
+          </div>
         </div>
 
-        <div className="dashboard-picker__grid">
-          {slot.availableWidgets.map((widget) => (
-            <button
-              key={widget.type}
-              type="button"
-              className="dashboard-picker__option"
-              onClick={() => onSelect(slot.key, widget.type)}
-              disabled={isBusy}
-            >
-              <strong>{widget.label}</strong>
-              <span>{widget.type.replaceAll("_", " ")}</span>
+        <div className="home-day-visual" aria-hidden="true">
+          <div className="home-day-visual__glow" />
+          <img src={logoImage} alt="" />
+          <div className="home-day-visual__plant" />
+        </div>
+      </div>
+    </>
+  );
+}
+
+function QuickStartBlock({ navigate }) {
+  const actions = [
+    { label: "Новое занятие", icon: ScheduleIcon, path: "/schedule" },
+    { label: "Добавить ученика", icon: StudentsIcon, path: "/students?tab=students" },
+    { label: "Выдать ДЗ", icon: BoardIcon, path: "/students?tab=homework&create=1" },
+    { label: "Открыть сообщения", icon: MessageIcon, path: "/messages" },
+  ];
+
+  return (
+    <>
+      <CardHead icon={BoardIcon} title="Быстрый старт" text="Что хотите сделать?" />
+      <div className="home-quick-grid">
+        {actions.map((action) => {
+          const Icon = action.icon;
+          return (
+            <button key={action.label} type="button" onClick={() => navigate(action.path)}>
+              <Icon />
+              <span>{action.label}</span>
             </button>
-          ))}
-        </div>
+          );
+        })}
       </div>
-    </div>
+    </>
   );
 }
 
-function renderStatWidget({ slot, summary, user, onChange, onRemove, isBusy }) {
-  const widgets = {
-    upcoming_lesson: {
-      title: "Ближайшее занятие",
-      accent: "lime",
-      value: summary?.upcomingLesson ? `${formatDate(summary.upcomingLesson.date)} • ${summary.upcomingLesson.timeRange}` : "Пока нет запланированных занятий",
-      note: summary?.upcomingLesson?.partnerName || "Спокойный ритм недели",
-      kicker: summary?.upcomingLesson ? summary.upcomingLesson.title : "Open slot",
-    },
-    weekly_load: {
-      title: "Нагрузка недели",
-      accent: "orange",
-      value: `${summary?.lessonsThisWeek ?? 0} занятий`,
-      note: summary?.weeklySummary || "Сводка по занятости за неделю",
-      kicker: "Weekly flow",
-    },
-    messages: {
-      title: "Сообщения",
-      accent: "orange",
-      value: `${summary?.unreadMessages ?? 0} новых`,
-      note: "Следи за диалогами и быстрыми ответами",
-      kicker: "Inbox",
-    },
-    notifications: {
-      title: "Уведомления",
-      accent: "dark",
-      value: `${summary?.unreadNotifications ?? 0} событий`,
-      note: "Важные сигналы по расписанию и системе",
-      kicker: "Alerts",
-    },
-    connections: {
-      title: user?.role === "teacher" ? "Ученики" : "Преподаватели",
-      accent: "lime",
-      value: `${summary?.connectedCount ?? 0} активных`,
-      note: "Все текущие связи в одном месте",
-      kicker: "Network",
-    },
-    pending_requests: {
-      title: user?.role === "teacher" ? "Заявки" : "Приглашения",
-      accent: "dark",
-      value: `${summary?.pendingRequests ?? 0} ждут ответа`,
-      note: "Не теряй новые входящие запросы",
-      kicker: "Requests",
-    },
-    free_hours: {
-      title: "Свободные часы",
-      accent: "peach",
-      value: `${summary?.freeHoursToday ?? 0} ч`,
-      note: "Окна для новых встреч сегодня",
-      kicker: "Available",
-    },
-  };
-
-  const widget = widgets[slot.widgetType];
-
-  if (!widget) {
-    return null;
-  }
-
+function LessonsBlock({ entries, navigate }) {
   return (
-    <DashboardSlotFrame slot={slot} title={widget.title} onChange={onChange} onRemove={onRemove} isBusy={isBusy}>
-      <div className={`dashboard-stat dashboard-stat--builder dashboard-stat--accent-${widget.accent}`}>
-        <div className="dashboard-stat__kicker">{widget.kicker}</div>
-        <strong>{widget.value}</strong>
-        <span>{widget.note}</span>
-        <div className="dashboard-stat__decor" aria-hidden="true" />
-      </div>
-    </DashboardSlotFrame>
-  );
-}
-
-function MainOverviewWidget({ summary }) {
-  const points = buildTrendPoints(summary);
-  const width = 540;
-  const height = 180;
-  const path = buildCurvePath(points, width, height);
-
-  return (
-    <div className="dashboard-graph">
-      <div className="dashboard-graph__days">
-        {points.map((point) => (
-          <span key={point.day}>{point.day}</span>
+    <>
+      <CardHead icon={ScheduleIcon} title="Актуальные занятия" text="Расписание на сегодня" />
+      <div className="home-list">
+        {entries.slice(0, 4).map((entry) => (
+          <div key={entry.id} className="home-list-row">
+            <time>{entry.startHour}:00</time>
+            <span>
+              <strong>{entry.title}</strong>
+              <small>{entry.participant?.fullName || "Без ученика"}</small>
+            </span>
+            <b>{entry.startHour <= new Date().getHours() && entry.endHour > new Date().getHours() ? "Идёт" : "Скоро"}</b>
+          </div>
         ))}
+        {!entries.length ? <div className="home-empty">На сегодня занятий нет</div> : null}
       </div>
-
-      <div className="dashboard-graph__canvas">
-        <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true">
-          <path className="dashboard-graph__track dashboard-graph__track--orange" d={path} />
-          <path
-            className="dashboard-graph__track dashboard-graph__track--lime"
-            d={path
-              .replace(/M ([\d.]+) ([\d.]+)/, (_, x, y) => `M ${x} ${(Number(y) + 14).toFixed(1)}`)
-              .replace(/L ([\d.]+) ([\d.]+)/g, (_, x, y) => `L ${x} ${(Number(y) - 10).toFixed(1)}`)}
-          />
-        </svg>
-
-        <div className="dashboard-graph__bars">
-          {points.map((point) => (
-            <div key={point.day} className="dashboard-graph__bar">
-              <div className="dashboard-graph__badge">{point.label}</div>
-              <span style={{ height: `${Math.max(point.normalized * 100, 18)}%` }} />
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
+      <button className="home-card-link" type="button" onClick={() => navigate("/schedule")}>
+        Все занятия
+        <span>→</span>
+      </button>
+    </>
   );
 }
 
-function renderContentWidget({ slot, summary, user, onChange, onRemove, isBusy }) {
-  if (slot.widgetType === "today_overview") {
-    return (
-      <DashboardSlotFrame slot={slot} title="Сегодня" onChange={onChange} onRemove={onRemove} isBusy={isBusy}>
-        <div className="dashboard-main-card">
-          <div className="dashboard-main-card__summary">
-            <div className="dashboard-main-card__metric">
-              <strong>{summary?.todaysLessons ?? "—"}</strong>
-              <span>today lessons</span>
-            </div>
-            <div className="dashboard-main-card__metric">
-              <strong>{summary?.freeHoursToday ?? "—"}</strong>
-              <span>free hours</span>
-            </div>
-            <div className="dashboard-main-card__metric">
-              <strong>{summary?.pendingRequests ?? "—"}</strong>
-              <span>{user?.role === "teacher" ? "pending requests" : "invites"}</span>
-            </div>
-          </div>
+function MessagesBlock({ conversations, navigate }) {
+  return (
+    <>
+      <CardHead icon={MessageIcon} title="Новые сообщения" text="Последние диалоги" />
+      <div className="home-list">
+        {conversations.slice(0, 4).map((conversation) => {
+          const title = conversation.type === "group" ? conversation.title : conversation.participant?.fullName;
+          const avatar = conversation.type === "group" ? title : conversation.participant?.fullName;
+          return (
+            <button
+              key={conversation.id}
+              className="home-message-row"
+              type="button"
+              onClick={() => navigate(`/messages?conversationId=${encodeURIComponent(conversation.id)}`)}
+            >
+              <span className="home-avatar">{getInitials(avatar)}</span>
+              <span>
+                <strong>{title || "Диалог"}</strong>
+                <small>{conversation.lastMessage || "Сообщений пока нет"}</small>
+              </span>
+              <time>{formatTimeAgo(conversation.lastMessageAt)}</time>
+            </button>
+          );
+        })}
+        {!conversations.length ? <div className="home-empty">Сообщений пока нет</div> : null}
+      </div>
+      <button className="home-card-link" type="button" onClick={() => navigate("/messages")}>
+        Все сообщения
+        <span>→</span>
+      </button>
+    </>
+  );
+}
 
-          <MainOverviewWidget summary={summary} />
+function FinanceBlock({ analytics, navigate }) {
+  const completedHours = analytics?.stats?.completedHours || 0;
+  const plannedHours = analytics?.stats?.upcomingHours || 0;
+  const total = Math.max(1, completedHours + plannedHours + (analytics?.stats?.cancelledHours || 0));
+  const completedDeg = Math.round((completedHours / total) * 360);
+  const plannedDeg = Math.round(((completedHours + plannedHours) / total) * 360);
+
+  return (
+    <>
+      <CardHead icon={FinanceIcon} title="Финансы" text="По реальным часам" />
+      <div className="home-finance">
+        <div>
+          <span>Проведено за месяц</span>
+          <strong>{formatHours(completedHours)}</strong>
+          <b>План: {formatHours(plannedHours)}</b>
         </div>
-      </DashboardSlotFrame>
-    );
-  }
+        <div
+          className="home-finance__donut"
+          style={{
+            background: `conic-gradient(#111111 0deg ${completedDeg}deg, #e1ff5c ${completedDeg}deg ${plannedDeg}deg, rgba(17,17,17,0.08) ${plannedDeg}deg 360deg)`,
+          }}
+          aria-hidden="true"
+        />
+      </div>
+      <button className="home-card-link" type="button" onClick={() => navigate("/analytics")}>
+        Посмотреть финансы
+        <span>→</span>
+      </button>
+    </>
+  );
+}
 
-  if (slot.widgetType === "day_metrics") {
-    return (
-      <DashboardSlotFrame slot={slot} title="Статистика дня" onChange={onChange} onRemove={onRemove} isBusy={isBusy}>
-        <div className="dashboard-side-progress">
-          <h3>Completed task statistics</h3>
-          <div className="dashboard-side-progress__item">
-            <span>Today</span>
-            <div><b style={{ width: `${Math.min((summary?.todaysLessons ?? 0) * 12 + 16, 100)}%` }} /></div>
+function HomeworkReviewBlock({ assignments, navigate }) {
+  const reviewItems = assignments.filter((assignment) => assignment.status === "submitted");
+
+  return (
+    <>
+      <CardHead icon={BoardIcon} title="Домашние задания на проверку" text="Работы учеников" />
+      <div className="home-list">
+        {reviewItems.slice(0, 4).map((assignment) => (
+          <div key={assignment.id} className="home-homework-row">
+            <span className="home-avatar">{getInitials(assignment.recipientName)}</span>
+            <span>
+              <strong>{assignment.recipientName}</strong>
+              <small>{assignment.title}</small>
+            </span>
+            <b>{assignment.dueDate ? formatDate(assignment.dueDate) : "Без срока"}</b>
           </div>
-          <div className="dashboard-side-progress__item">
-            <span>Week</span>
-            <div><b style={{ width: `${Math.min((summary?.lessonsThisWeek ?? 0) * 10 + 18, 100)}%` }} /></div>
-          </div>
-          <div className="dashboard-side-progress__item">
-            <span>Focus</span>
-            <div><b style={{ width: `${Math.min((summary?.freeHoursToday ?? 0) * 8 + 12, 100)}%` }} /></div>
-          </div>
+        ))}
+        {!reviewItems.length ? <div className="home-empty">Заданий на проверке нет</div> : null}
+      </div>
+      <button className="home-card-link" type="button" onClick={() => navigate("/students?tab=homework")}>
+        Все задания
+        <span>{reviewItems.length}</span>
+      </button>
+    </>
+  );
+}
+
+function AnalyticsBlock({ analytics }) {
+  const stats = analytics?.stats || {};
+
+  return (
+    <>
+      <CardHead icon={AnalyticsIcon} title="Мини-аналитика" text="Этот месяц" />
+      <div className="home-mini-stats">
+        <div>
+          <span>Проведено занятий</span>
+          <strong>{stats.completedLessons || 0}</strong>
         </div>
-      </DashboardSlotFrame>
-    );
-  }
-
-  if (slot.widgetType === "schedule_status") {
-    return (
-      <DashboardSlotFrame slot={slot} title="Статус расписания" onChange={onChange} onRemove={onRemove} isBusy={isBusy}>
-        <div className="dashboard-side-note">
-          <h3>Last notes</h3>
-          <div className="dashboard-side-note__row">
-            <span>Next</span>
-            <strong>
-              {summary?.upcomingLesson
-                ? `${formatDate(summary.upcomingLesson.date)} • ${summary.upcomingLesson.timeRange}`
-                : "Пока без следующего занятия"}
-            </strong>
-          </div>
-          <div className="dashboard-side-note__row">
-            <span>Partner</span>
-            <strong>{summary?.upcomingLesson?.partnerName || "Не назначен"}</strong>
-          </div>
-          <div className="dashboard-side-note__row">
-            <span>Updated</span>
-            <strong>
-              {summary?.recentScheduleUpdatedAt
-                ? new Date(summary.recentScheduleUpdatedAt).toLocaleString("ru-RU")
-                : "Сегодня изменений не было"}
-            </strong>
-          </div>
+        <div>
+          <span>Часов проведено</span>
+          <strong>{formatHours(stats.completedHours || 0)}</strong>
         </div>
-      </DashboardSlotFrame>
-    );
-  }
+        <div>
+          <span>Новые ученики</span>
+          <strong>{stats.activeStudents || 0}</strong>
+        </div>
+      </div>
+      <div className="home-best-day">
+        <strong>Лучший день: {analytics?.charts?.weekdays?.slice().sort((a, b) => b.hours - a.hours)[0]?.label || "пока нет"}</strong>
+        <span>Больше всего занятий и активности</span>
+      </div>
+    </>
+  );
+}
 
-  return renderStatWidget({ slot, summary, user, onChange, onRemove, isBusy });
+function ProgressBlock({ summary }) {
+  return (
+    <>
+      <div className="home-progress">
+        <div className="home-progress__badge">★</div>
+        <div>
+          <strong>Маленький прогресс каждый день - это большой результат.</strong>
+          <span>{summary?.weeklySummary || "Собирайте занятия, задания и ответы в одном рабочем ритме."}</span>
+        </div>
+        <div className="home-progress__mascot" aria-hidden="true">R</div>
+      </div>
+    </>
+  );
 }
 
 export function HomePage() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [summary, setSummary] = useState(null);
-  const [slots, setSlots] = useState([]);
-  const [pickerSlot, setPickerSlot] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
+  const [schedule, setSchedule] = useState({ entries: [] });
+  const [conversations, setConversations] = useState([]);
+  const [homework, setHomework] = useState([]);
+  const [analytics, setAnalytics] = useState(null);
+  const [blockOrder, setBlockOrder] = useState(() => getStoredOrder(user?.id || "guest"));
+  const [draggedBlock, setDraggedBlock] = useState("");
+
+  useEffect(() => {
+    setBlockOrder(getStoredOrder(user?.id || "guest"));
+  }, [user?.id]);
 
   useEffect(() => {
     let isMounted = true;
+    const today = toLocalIsoDate(new Date());
+    const month = today.slice(0, 7);
+    const requests = [
+      authRequest("/api/dashboard-summary"),
+      authRequest(`/api/schedule?month=${encodeURIComponent(month)}&date=${encodeURIComponent(today)}`),
+      authRequest("/api/conversations"),
+      authRequest("/api/homework"),
+      user?.role === "teacher" ? authRequest("/api/analytics/overview").catch(() => null) : Promise.resolve(null),
+    ];
 
-    Promise.all([authRequest("/api/dashboard-summary"), authRequest("/api/dashboard-layout")])
-      .then(([summaryData, layoutData]) => {
+    Promise.all(requests)
+      .then(([summaryData, scheduleData, conversationData, homeworkData, analyticsData]) => {
         if (!isMounted) {
           return;
         }
 
-        setSummary(summaryData);
-        setSlots(layoutData.slots || []);
+        const homeworkAssignments = homeworkData?.assignments || [];
+        setSummary({
+          ...summaryData,
+          homeworkReviewCount: homeworkAssignments.filter((assignment) => assignment.status === "submitted").length,
+          completedHours: analyticsData?.stats?.completedHours || 0,
+        });
+        setSchedule(scheduleData || { entries: [] });
+        setConversations(conversationData?.conversations || []);
+        setHomework(homeworkAssignments);
+        setAnalytics(analyticsData);
       })
-      .catch(() => {})
-      .finally(() => {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      });
+      .catch(() => {});
 
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [user?.role]);
 
-  const slotMap = useMemo(() => new Map(slots.map((slot) => [slot.key, slot])), [slots]);
-  const hasWidgets = slots.some((slot) => slot.widgetType);
+  const blocks = useMemo(
+    () => ({
+      day: <DayBlock summary={summary} todayEntries={schedule.entries || []} />,
+      quick: <QuickStartBlock navigate={navigate} />,
+      lessons: <LessonsBlock entries={schedule.entries || []} navigate={navigate} />,
+      messages: <MessagesBlock conversations={conversations} navigate={navigate} />,
+      finance: <FinanceBlock analytics={analytics} navigate={navigate} />,
+      homework: <HomeworkReviewBlock assignments={homework} navigate={navigate} />,
+      analytics: <AnalyticsBlock analytics={analytics} />,
+      progress: <ProgressBlock summary={summary} />,
+    }),
+    [analytics, conversations, homework, navigate, schedule.entries, summary],
+  );
 
-  async function refreshLayout(nextPromise) {
-    setIsSaving(true);
-    try {
-      const data = await nextPromise;
-      setSlots(data.slots || []);
-      setPickerSlot(null);
-    } finally {
-      setIsSaving(false);
-    }
+  function persistOrder(nextOrder) {
+    setBlockOrder(nextOrder);
+    window.localStorage.setItem(`repetly-home-order-${user?.id || "guest"}`, JSON.stringify(nextOrder));
   }
 
-  function handleSelectWidget(slotKey, widgetType) {
-    refreshLayout(
-      authRequest(`/api/dashboard-layout/${slotKey}`, {
-        method: "PUT",
-        body: JSON.stringify({ widgetType }),
-      }),
-    );
+  function handleDragStart(event, id) {
+    setDraggedBlock(id);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", id);
   }
 
-  function handleRemoveWidget(slotKey) {
-    refreshLayout(
-      authRequest(`/api/dashboard-layout/${slotKey}`, {
-        method: "DELETE",
-      }),
-    );
+  function handleDragEnter(event, targetId) {
+    event.preventDefault();
+
+    if (!draggedBlock || draggedBlock === targetId) {
+      return;
+    }
+
+    const nextOrder = [...blockOrder];
+    const fromIndex = nextOrder.indexOf(draggedBlock);
+    const toIndex = nextOrder.indexOf(targetId);
+
+    if (fromIndex < 0 || toIndex < 0) {
+      return;
+    }
+
+    nextOrder.splice(fromIndex, 1);
+    nextOrder.splice(toIndex, 0, draggedBlock);
+    persistOrder(nextOrder);
   }
 
-  function handleResetLayout() {
-    refreshLayout(
-      authRequest("/api/dashboard-layout", {
-        method: "DELETE",
-      }),
-    );
-  }
-
-  function renderSlot(slotKey) {
-    const slot = slotMap.get(slotKey);
-
-    if (!slot) {
-      return null;
-    }
-
-    if (!slot.widgetType) {
-      return <EmptyDashboardSlot slot={slot} onAdd={setPickerSlot} isBusy={isSaving} />;
-    }
-
-    if (slot.size === "stat") {
-      return renderStatWidget({
-        slot,
-        summary,
-        user,
-        onChange: setPickerSlot,
-        onRemove: handleRemoveWidget,
-        isBusy: isSaving,
-      });
-    }
-
-    return renderContentWidget({
-      slot,
-      summary,
-      user,
-      onChange: setPickerSlot,
-      onRemove: handleRemoveWidget,
-      isBusy: isSaving,
-    });
+  function handleDragEnd() {
+    setDraggedBlock("");
   }
 
   return (
-    <AppLayout title="Главная" eyebrow="Гибкая панель" contentMode="custom">
-      <div className="dashboard-home">
-        <div className="dashboard-home__toolbar">
-          <button
-            type="button"
-            className="dashboard-widget__action dashboard-widget__action--ghost"
-            onClick={handleResetLayout}
-            disabled={isSaving || isLoading || !hasWidgets}
+    <AppLayout title="Главная" eyebrow="Рабочий день" contentMode="custom" contentClassName="content__body--home">
+      <section className="home-board">
+        {blockOrder.map((id) => (
+          <DashboardCard
+            key={id}
+            id={id}
+            dragState={draggedBlock}
+            onDragStart={handleDragStart}
+            onDragEnter={handleDragEnter}
+            onDragEnd={handleDragEnd}
           >
-            Clear widgets
-          </button>
-        </div>
-
-        <section className="stats-grid dashboard-builder-grid">
-          {STAT_SLOT_KEYS.map((slotKey) => (
-            <div key={slotKey} className="dashboard-builder-grid__item">
-              {isLoading ? <article className="panel dashboard-slot dashboard-slot--loading" /> : renderSlot(slotKey)}
-            </div>
-          ))}
-        </section>
-
-        <section className="dashboard-grid dashboard-grid--feature dashboard-builder-layout">
-          <div className="dashboard-builder-layout__main">
-            {isLoading ? <article className="panel dashboard-slot dashboard-slot--loading dashboard-slot--main" /> : renderSlot(CONTENT_SLOT_KEYS[0])}
-          </div>
-
-          <div className="side-column dashboard-builder-layout__side">
-            {CONTENT_SLOT_KEYS.slice(1).map((slotKey) => (
-              <div key={slotKey}>
-                {isLoading ? <article className="panel dashboard-slot dashboard-slot--loading" /> : renderSlot(slotKey)}
-              </div>
-            ))}
-          </div>
-        </section>
-      </div>
-
-      <WidgetPicker slot={pickerSlot} onClose={() => setPickerSlot(null)} onSelect={handleSelectWidget} isBusy={isSaving} />
+            {blocks[id]}
+          </DashboardCard>
+        ))}
+      </section>
     </AppLayout>
   );
 }

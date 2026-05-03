@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "../components/AppLayout";
+import { EditableChip } from "../components/EditableChip";
+import { TelegramIntegrationPanel } from "../components/TelegramIntegrationPanel";
+import { ToastNotification } from "../components/ToastNotification";
 import { useAuth } from "../auth/AuthContext";
 
 const CROP_SIZE = 320;
@@ -94,7 +97,8 @@ function formatDate(value) {
 export function ProfilePage() {
   const { user, updateProfile } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
-  const activeTab = searchParams.get("tab") === "pricing" ? "pricing" : "profile";
+  const requestedTab = searchParams.get("tab");
+  const activeTab = requestedTab === "pricing" || requestedTab === "telegram" ? requestedTab : "profile";
   const currentPlan = normalizePlanId(user?.subscriptionPlan);
   const [formState, setFormState] = useState({
     fullName: user?.fullName || "",
@@ -108,6 +112,7 @@ export function ProfilePage() {
   const [subjectDraft, setSubjectDraft] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [toast, setToast] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState("");
   const [cropSource, setCropSource] = useState("");
@@ -130,6 +135,18 @@ export function ProfilePage() {
     setSelectedFileName("");
   }, [user]);
 
+  useEffect(() => {
+    if (error) {
+      setToast({ id: Date.now(), type: "error", message: error });
+    }
+  }, [error]);
+
+  useEffect(() => {
+    if (success) {
+      setToast({ id: Date.now(), type: "success", message: success });
+    }
+  }, [success]);
+
   const initials = useMemo(
     () =>
       formState.fullName
@@ -147,7 +164,7 @@ export function ProfilePage() {
   );
 
   function switchTab(tab) {
-    setSearchParams(tab === "pricing" ? { tab: "pricing" } : {});
+    setSearchParams(tab === "profile" ? {} : { tab });
   }
 
   function handleAddSubject() {
@@ -305,9 +322,11 @@ export function ProfilePage() {
         subject: updatedUser.subject || "",
         subjects: updatedUser.subjects?.map((subject) => subject.name) || [],
       });
-      setSuccess("Профиль сохранён.");
+      const message = "Профиль сохранён.";
+      setSuccess(message);
     } catch (requestError) {
-      setError(requestError.payload?.message || "Не удалось сохранить профиль.");
+      const message = requestError.payload?.message || "Не удалось сохранить профиль.";
+      setError(message);
     } finally {
       setIsSubmitting(false);
     }
@@ -330,6 +349,13 @@ export function ProfilePage() {
             onClick={() => switchTab("pricing")}
           >
             Тарифы
+          </button>
+          <button
+            type="button"
+            className={`combined-page__tab${activeTab === "telegram" ? " combined-page__tab--active" : ""}`}
+            onClick={() => switchTab("telegram")}
+          >
+            Telegram
           </button>
         </div>
 
@@ -373,58 +399,38 @@ export function ProfilePage() {
               </div>
 
               <form className="profile-form" onSubmit={handleSubmit}>
-                {error ? <div className="auth-alert auth-alert--error">{error}</div> : null}
-                {success ? <div className="auth-alert auth-alert--success">{success}</div> : null}
-
-                <label className="auth-field" htmlFor="profile-name">
-                  <span>Полное имя</span>
-                  <input
-                    className="auth-input"
+                <div className="profile-editable-list">
+                  <EditableChip
                     id="profile-name"
+                    label="Полное имя"
                     value={formState.fullName}
-                    onChange={(event) =>
-                      setFormState((current) => ({ ...current, fullName: event.target.value }))
-                    }
+                    placeholder="Без имени"
+                    onChange={(fullName) => setFormState((current) => ({ ...current, fullName }))}
                   />
-                </label>
-
-                <label className="auth-field" htmlFor="profile-email">
-                  <span>Email</span>
-                  <input
-                    className="auth-input"
+                  <EditableChip
                     id="profile-email"
+                    label="Email"
                     type="email"
                     value={formState.email}
-                    onChange={(event) =>
-                      setFormState((current) => ({ ...current, email: event.target.value }))
-                    }
+                    placeholder="email@example.com"
+                    onChange={(email) => setFormState((current) => ({ ...current, email }))}
                   />
-                </label>
-
-                <label className="auth-field" htmlFor="profile-username">
-                  <span>Никнейм</span>
-                  <input
-                    className="auth-input"
+                  <EditableChip
                     id="profile-username"
+                    label="Никнейм"
                     value={formState.username}
-                    onChange={(event) =>
-                      setFormState((current) => ({ ...current, username: event.target.value }))
-                    }
+                    placeholder="username"
+                    onChange={(username) => setFormState((current) => ({ ...current, username }))}
                   />
-                </label>
-
-                <label className="auth-field" htmlFor="profile-phone">
-                  <span>Телефон</span>
-                  <input
-                    className="auth-input"
+                  <EditableChip
                     id="profile-phone"
+                    label="Телефон"
                     type="tel"
                     value={formState.phoneNumber}
-                    onChange={(event) =>
-                      setFormState((current) => ({ ...current, phoneNumber: event.target.value }))
-                    }
+                    placeholder="Не указано"
+                    onChange={(phoneNumber) => setFormState((current) => ({ ...current, phoneNumber }))}
                   />
-                </label>
+                </div>
 
                 <div className="auth-field">
                   <span>Загрузить аватар</span>
@@ -493,7 +499,7 @@ export function ProfilePage() {
               </form>
             </article>
           </section>
-        ) : (
+        ) : activeTab === "pricing" ? (
           <section className="pricing-page">
             <article className="panel panel--focus pricing-hero">
               <div>
@@ -556,6 +562,8 @@ export function ProfilePage() {
               })}
             </section>
           </section>
+        ) : (
+          <TelegramIntegrationPanel />
         )}
       </section>
 
@@ -618,6 +626,7 @@ export function ProfilePage() {
           </div>
         </div>
       ) : null}
+      <ToastNotification toast={toast} onClose={() => setToast(null)} />
     </AppLayout>
   );
 }
