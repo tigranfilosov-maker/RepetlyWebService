@@ -133,7 +133,13 @@ const viewModes = [
   { value: "month", label: "Месяц" },
   { value: "week", label: "Неделя" },
   { value: "day", label: "День" },
+  { value: "completed", label: "Проведено" },
 ];
+
+const paymentStatusLabels = {
+  paid: "Оплачено",
+  unpaid: "Не оплачено",
+};
 
 export function SchedulePage() {
   const { user } = useAuth();
@@ -155,6 +161,8 @@ export function SchedulePage() {
   const [cancelEntry, setCancelEntry] = useState(null);
   const [cancelReason, setCancelReason] = useState("");
   const [isCancelSending, setIsCancelSending] = useState(false);
+  const [activeEntry, setActiveEntry] = useState(null);
+  const [isEntryUpdating, setIsEntryUpdating] = useState(false);
   const isStudent = user?.role === "student";
 
   const monthKey = formatMonth(monthDate);
@@ -333,6 +341,9 @@ export function SchedulePage() {
 
   const selectedDateObject = parseIsoDate(selectedDate);
   const selectedDayEntries = entriesByDate[selectedDate] || schedule.entries;
+  const completedEntries = visibleEntries
+    .filter((entry) => entry.status === "completed")
+    .sort((first, second) => second.date.localeCompare(first.date) || second.startHour - first.startHour);
 
   function selectDate(iso, options = {}) {
     const nextDate = parseIsoDate(iso);
@@ -395,6 +406,80 @@ export function SchedulePage() {
       setError(requestError.payload?.message || "Не удалось отправить запрос на отмену.");
     } finally {
       setIsCancelSending(false);
+    }
+  }
+
+  function replaceScheduleEntry(updatedEntry) {
+    setSchedule((current) => {
+      const updateEntry = (entry) =>
+        entry.id === updatedEntry.id || (entry.sharedEventId && entry.sharedEventId === updatedEntry.sharedEventId)
+          ? { ...entry, ...updatedEntry }
+          : entry;
+      const nextMonthEntries = (current.monthEntries || []).map(updateEntry);
+      const nextEntries = nextMonthEntries.filter((entry) => entry.date === selectedDate);
+
+      return {
+        ...current,
+        overview: buildOverview(nextMonthEntries),
+        monthEntries: nextMonthEntries,
+        entries: nextEntries,
+      };
+    });
+    setActiveEntry((current) =>
+      current?.id === updatedEntry.id || (current?.sharedEventId && current.sharedEventId === updatedEntry.sharedEventId)
+        ? { ...current, ...updatedEntry }
+        : current,
+    );
+  }
+
+  function openEntry(entry) {
+    if (isStudent) {
+      setCancelEntry(entry);
+      return;
+    }
+
+    setError("");
+    setActiveEntry(entry);
+  }
+
+  async function updateEntry(payload) {
+    if (!activeEntry) {
+      return;
+    }
+
+    setError("");
+    setIsEntryUpdating(true);
+
+    try {
+      const result = await authRequest(`/api/schedule/entries/${activeEntry.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      replaceScheduleEntry(result.entry);
+    } catch (requestError) {
+      setError(requestError.payload?.message || "Не удалось обновить занятие.");
+    } finally {
+      setIsEntryUpdating(false);
+    }
+  }
+
+  async function sendPaymentReminder() {
+    if (!activeEntry) {
+      return;
+    }
+
+    setError("");
+    setIsEntryUpdating(true);
+
+    try {
+      const result = await authRequest(`/api/schedule/entries/${activeEntry.id}/payment-reminder`, {
+        method: "POST",
+      });
+      replaceScheduleEntry({ ...activeEntry, paymentRemindedAt: result.paymentRemindedAt });
+    } catch (requestError) {
+      setError(requestError.payload?.message || "Не удалось отправить напоминание об оплате.");
+    } finally {
+      setIsEntryUpdating(false);
     }
   }
 
@@ -465,9 +550,9 @@ export function SchedulePage() {
               <article
                 className="schedule-mobile-card"
                 key={entry.id}
-                role={isStudent ? "button" : undefined}
-                tabIndex={isStudent ? 0 : undefined}
-                onClick={isStudent ? () => setCancelEntry(entry) : undefined}
+                role="button"
+                tabIndex={0}
+                onClick={() => openEntry(entry)}
               >
                 <div>
                   <time>
@@ -611,9 +696,9 @@ export function SchedulePage() {
                       <article
                         className="schedule-timeline-card schedule-timeline-card--week"
                         key={entry.id}
-                        role={isStudent ? "button" : undefined}
-                        tabIndex={isStudent ? 0 : undefined}
-                        onClick={isStudent ? () => setCancelEntry(entry) : undefined}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openEntry(entry)}
                         style={{
                           top: `${Math.max(entry.startHour - 6, 0) * 74}px`,
                           height: `${Math.max(entry.endHour - entry.startHour, 1) * 74}px`,
@@ -646,8 +731,7 @@ export function SchedulePage() {
                             <button
                               className="schedule-entry-open-button"
                               type="button"
-                              onClick={isStudent ? () => setCancelEntry(entry) : undefined}
-                              disabled={!isStudent}
+                              onClick={() => openEntry(entry)}
                             >
                               Открыть занятие
                             </button>
@@ -663,6 +747,28 @@ export function SchedulePage() {
                   </div>
                 ))}
               </div>
+            </div>
+          ) : null}
+
+          {viewMode === "completed" ? (
+            <div className="schedule-view-panel schedule-completed-list" key="completed">
+              {completedEntries.map((entry) => (
+                <button className="schedule-completed-card" key={entry.id} type="button" onClick={() => openEntry(entry)}>
+                  <span>
+                    <strong>{entry.title}</strong>
+                    <small>
+                      {formatCompactDate(entry.date)}, {hourLabel(entry.startHour)} - {hourLabel(entry.endHour)}
+                    </small>
+                  </span>
+                  <span>{entry.participant?.fullName || "Без ученика"}</span>
+                  <b className={`lesson-payment-status lesson-payment-status--${entry.paymentStatus || "unpaid"}`}>
+                    {paymentStatusLabels[entry.paymentStatus || "unpaid"]}
+                  </b>
+                </button>
+              ))}
+              {!completedEntries.length ? (
+                <div className="schedule-day-empty">Проведённых занятий пока нет. Отметьте занятие как проведённое в календаре.</div>
+              ) : null}
             </div>
           ) : null}
         </article>
@@ -682,9 +788,9 @@ export function SchedulePage() {
                   <article
                     className="schedule-day-card"
                     key={entry.id}
-                    role={isStudent ? "button" : undefined}
-                    tabIndex={isStudent ? 0 : undefined}
-                    onClick={isStudent ? () => setCancelEntry(entry) : undefined}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openEntry(entry)}
                   >
                     <time>
                       {hourLabel(entry.startHour)} - {hourLabel(entry.endHour)}
@@ -854,6 +960,83 @@ export function SchedulePage() {
                 {isSaving ? "Сохраняем..." : "Сохранить занятие"}
               </button>
             </form>
+          </article>
+        </div>
+      ) : null}
+
+      {activeEntry && !isStudent ? (
+        <div className="dashboard-modal">
+          <button
+            className="dashboard-modal__backdrop"
+            type="button"
+            aria-label="Закрыть занятие"
+            onClick={() => setActiveEntry(null)}
+          />
+          <article className="panel dashboard-modal__dialog schedule-modal lesson-status-modal">
+            <div className="panel__head panel__head--tight">
+              <div>
+                <h2>{activeEntry.title}</h2>
+                <p>
+                  {formatDateLabel(activeEntry.date)}, {hourLabel(activeEntry.startHour)} - {hourLabel(activeEntry.endHour)}
+                </p>
+              </div>
+            </div>
+
+            {error ? <div className="auth-alert auth-alert--error">{error}</div> : null}
+
+            <div className="lesson-status-modal__grid">
+              <div>
+                <span>Ученик</span>
+                <strong>{activeEntry.participant?.fullName || "Без ученика"}</strong>
+              </div>
+              <div>
+                <span>Статус занятия</span>
+                <strong>{activeEntry.status === "completed" ? "Проведено" : "Запланировано"}</strong>
+              </div>
+              <div>
+                <span>Оплата</span>
+                <strong>{paymentStatusLabels[activeEntry.paymentStatus || "unpaid"]}</strong>
+              </div>
+              <div>
+                <span>Напоминание</span>
+                <strong>{activeEntry.paymentRemindedAt ? "Отправлено" : "Не отправлялось"}</strong>
+              </div>
+            </div>
+
+            <div className="lesson-status-modal__actions">
+              <button
+                className="auth-submit"
+                type="button"
+                disabled={isEntryUpdating || activeEntry.status === "completed"}
+                onClick={() => updateEntry({ status: "completed" })}
+              >
+                Отметить проведённым
+              </button>
+              <button
+                className="dashboard-widget__action"
+                type="button"
+                disabled={isEntryUpdating || activeEntry.paymentStatus === "paid"}
+                onClick={() => updateEntry({ paymentStatus: "paid" })}
+              >
+                Оплачено
+              </button>
+              <button
+                className="dashboard-widget__action"
+                type="button"
+                disabled={isEntryUpdating || activeEntry.paymentStatus === "unpaid"}
+                onClick={() => updateEntry({ paymentStatus: "unpaid" })}
+              >
+                Не оплачено
+              </button>
+              <button
+                className="dashboard-widget__action lesson-status-modal__remind"
+                type="button"
+                disabled={isEntryUpdating || !activeEntry.participant || activeEntry.paymentStatus === "paid"}
+                onClick={sendPaymentReminder}
+              >
+                Напомнить об оплате
+              </button>
+            </div>
           </article>
         </div>
       ) : null}

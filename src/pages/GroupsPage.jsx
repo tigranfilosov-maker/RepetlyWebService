@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AppLayout } from "../components/AppLayout";
 import { authRequest } from "../auth/AuthContext";
@@ -21,6 +21,48 @@ function formatDate(value) {
     day: "numeric",
     month: "short",
     year: "numeric",
+  });
+}
+
+function toLocalIsoDate(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function parseIsoDate(value) {
+  return value ? new Date(`${value}T00:00:00`) : new Date();
+}
+
+function buildMiniCalendarDays(monthDate) {
+  const firstDay = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+  const startOffset = (firstDay.getDay() + 6) % 7;
+  const startDate = new Date(firstDay);
+  startDate.setDate(firstDay.getDate() - startOffset);
+
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(startDate);
+    date.setDate(startDate.getDate() + index);
+    return {
+      iso: toLocalIsoDate(date),
+      dateNumber: date.getDate(),
+      inMonth: date.getMonth() === monthDate.getMonth(),
+    };
+  });
+}
+
+function readHomeworkAttachment(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      resolve({
+        name: file.name,
+        type: file.type || "application/octet-stream",
+        size: file.size,
+        dataUrl: reader.result,
+      });
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
   });
 }
 
@@ -65,14 +107,30 @@ function GroupInfoModal({ group, initialMode, isSaving, onClose, onOpenChat, onA
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const [attachment, setAttachment] = useState(null);
+  const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
+  const [datePickerMonth, setDatePickerMonth] = useState(() => new Date());
+  const datePickerRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     setMode(initialMode || "details");
   }, [initialMode, group?.id]);
 
-  if (!group) {
-    return null;
-  }
+  useEffect(() => {
+    if (!isDatePickerOpen) {
+      return undefined;
+    }
+
+    function handleClickOutside(event) {
+      if (!datePickerRef.current?.contains(event.target)) {
+        setIsDatePickerOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isDatePickerOpen]);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -81,20 +139,57 @@ function GroupInfoModal({ group, initialMode, isSaving, onClose, onOpenChat, onA
       title: title.trim(),
       description: description.trim(),
       dueDate,
+      attachments: attachment ? [attachment] : [],
     });
 
     if (success) {
       setTitle("");
       setDescription("");
       setDueDate("");
+      setAttachment(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
       setMode("details");
     }
+  }
+
+  async function handleAttachmentChange(event) {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      setAttachment(null);
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      event.target.value = "";
+      setAttachment(null);
+      return;
+    }
+
+    setAttachment(await readHomeworkAttachment(file));
+  }
+
+  function selectDueDate(value) {
+    setDueDate(value);
+    setIsDatePickerOpen(false);
+  }
+
+  const miniCalendarDays = useMemo(() => buildMiniCalendarDays(datePickerMonth), [datePickerMonth]);
+  const dueDateLabel = dueDate ? formatDate(dueDate) : "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0434\u0430\u0442\u0443";
+
+  if (!group) {
+    return null;
   }
 
   return (
     <div className="dashboard-modal">
       <button className="dashboard-modal__backdrop" type="button" aria-label="Закрыть группу" onClick={onClose} />
       <div className="panel dashboard-modal__dialog group-info-modal">
+        <button className="modal-close-button" type="button" aria-label="Закрыть" onClick={onClose}>
+          {"\u00d7"}
+        </button>
         <div className="panel__head panel__head--tight">
           <div>
             <h2>{group.name}</h2>
@@ -146,22 +241,76 @@ function GroupInfoModal({ group, initialMode, isSaving, onClose, onOpenChat, onA
             </label>
             <label className="auth-field">
               <span>Срок сдачи</span>
-              <input className="auth-input" type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
+              <div className="homework-date-picker" ref={datePickerRef}>
+                <button
+                  className="auth-input homework-date-picker__trigger"
+                  type="button"
+                  onClick={() => {
+                    setDatePickerMonth(parseIsoDate(dueDate));
+                    setIsDatePickerOpen((current) => !current);
+                  }}
+                >
+                  {dueDateLabel}
+                </button>
+                {isDatePickerOpen ? (
+                  <div className="homework-date-picker__menu">
+                    <div className="homework-date-picker__head">
+                      <button type="button" onClick={() => setDatePickerMonth((current) => new Date(current.getFullYear(), current.getMonth() - 1, 1))}>
+                        {"\u2190"}
+                      </button>
+                      <strong>{datePickerMonth.toLocaleDateString("ru-RU", { month: "long", year: "numeric" })}</strong>
+                      <button type="button" onClick={() => setDatePickerMonth((current) => new Date(current.getFullYear(), current.getMonth() + 1, 1))}>
+                        {"\u2192"}
+                      </button>
+                    </div>
+                    <div className="homework-mini-calendar__weekdays">
+                      {["\u041f\u043d", "\u0412\u0442", "\u0421\u0440", "\u0427\u0442", "\u041f\u0442", "\u0421\u0431", "\u0412\u0441"].map((day) => (
+                        <span key={day}>{day}</span>
+                      ))}
+                    </div>
+                    <div className="homework-mini-calendar__grid">
+                      {miniCalendarDays.map((day) => (
+                        <button
+                          key={day.iso}
+                          type="button"
+                          className={`homework-mini-calendar__day${day.iso === dueDate ? " homework-mini-calendar__day--active" : ""}${day.inMonth ? "" : " homework-mini-calendar__day--muted"}`}
+                          onClick={() => selectDueDate(day.iso)}
+                        >
+                          {day.dateNumber}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </label>
+            <label className="auth-field">
+              <span>{"\u0424\u0430\u0439\u043b"}</span>
+              <input ref={fileInputRef} className="homework-file-input" type="file" onChange={handleAttachmentChange} />
+              <button className="homework-attach-button" type="button" onClick={() => fileInputRef.current?.click()}>
+                <span aria-hidden="true">{"\ud83d\udcce"}</span>
+                {attachment ? "\u0417\u0430\u043c\u0435\u043d\u0438\u0442\u044c \u0444\u0430\u0439\u043b" : "\u041f\u0440\u0438\u043a\u0440\u0435\u043f\u0438\u0442\u044c \u0444\u0430\u0439\u043b"}
+              </button>
+              {attachment ? (
+                <button
+                  className="dashboard-widget__action homework-file-chip"
+                  type="button"
+                  onClick={() => {
+                    setAttachment(null);
+                    if (fileInputRef.current) {
+                      fileInputRef.current.value = "";
+                    }
+                  }}
+                >
+                  {attachment.name} · убрать
+                </button>
+              ) : null}
             </label>
             <button className="auth-submit" type="submit" disabled={isSaving || !title.trim() || !description.trim()}>
               {isSaving ? "Назначаем..." : "Выдать группе"}
             </button>
           </form>
         )}
-
-        <div className="group-form-modal__actions">
-          <button className="dashboard-widget__action" type="button" onClick={onClose}>
-            Закрыть
-          </button>
-          <button className="auth-submit" type="button" onClick={() => onOpenChat(group.id)}>
-            Написать
-          </button>
-        </div>
       </div>
     </div>
   );

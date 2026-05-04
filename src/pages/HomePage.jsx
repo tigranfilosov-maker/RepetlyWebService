@@ -219,7 +219,7 @@ function MessagesBlock({ conversations, navigate }) {
     <>
       <CardHead icon={MessageIcon} title="Новые сообщения" text="Последние диалоги" />
       <div className="home-list">
-        {conversations.slice(0, 4).map((conversation) => {
+        {conversations.slice(0, 2).map((conversation) => {
           const title = conversation.type === "group" ? conversation.title : conversation.participant?.fullName;
           const avatar = conversation.type === "group" ? title : conversation.participant?.fullName;
           return (

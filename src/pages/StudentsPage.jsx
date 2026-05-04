@@ -16,6 +16,11 @@ function formatDate(value) {
   });
 }
 
+function formatLessonPrice(value) {
+  const amount = Number(value || 0);
+  return amount > 0 ? `${amount.toLocaleString("ru-RU")} ₽ / занятие` : "Цена не указана";
+}
+
 function toLocalIsoDate(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
@@ -80,7 +85,13 @@ function readHomeworkAttachment(file) {
   });
 }
 
-function StudentProfileModal({ student, availableSubjects, onChangeSubjects, onClose, onMessage }) {
+function StudentProfileModal({ student, availableSubjects, onChangeSubjects, onChangePrice, onClose, onMessage }) {
+  const [lessonPrice, setLessonPrice] = useState("");
+
+  useEffect(() => {
+    setLessonPrice(String(student?.lessonPrice || ""));
+  }, [student?.id, student?.lessonPrice]);
+
   if (!student) {
     return null;
   }
@@ -124,6 +135,31 @@ function StudentProfileModal({ student, availableSubjects, onChangeSubjects, onC
             <dt>{"\u041f\u0440\u0435\u0434\u043c\u0435\u0442"}</dt>
             <dd>
               <StudentSubjectPicker student={student} availableSubjects={availableSubjects} onChangeSubjects={onChangeSubjects} />
+            </dd>
+          </div>
+          <div className="student-profile-modal__item">
+            <dt>Цена занятия</dt>
+            <dd>
+              <form
+                className="student-price-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  onChangePrice(student, Number(lessonPrice || 0));
+                }}
+              >
+                <input
+                  className="auth-input"
+                  type="number"
+                  min="0"
+                  step="50"
+                  value={lessonPrice}
+                  onChange={(event) => setLessonPrice(event.target.value)}
+                  placeholder="0"
+                />
+                <button className="dashboard-widget__action" type="submit">
+                  Сохранить
+                </button>
+              </form>
             </dd>
           </div>
         </dl>
@@ -192,6 +228,7 @@ function StudentCard({ student, onOpenProfile, onAssignHomework, onMessage }) {
           <div className="student-card43__content">
             <strong>{student.fullName}</strong>
             <small>{student.subject || "Предмет не назначен"}</small>
+            <em>{formatLessonPrice(student.lessonPrice)}</em>
           </div>
         </button>
 
@@ -816,6 +853,24 @@ export function StudentsPage() {
     setActiveStudent((current) => (current?.id === student.id ? updateStudent(current) : current));
   }
 
+  async function handleStudentPriceChange(student, lessonPrice) {
+    const response = await authRequest(`/api/teacher-students/${student.id}/price`, {
+      method: "PATCH",
+      body: JSON.stringify({ lessonPrice }),
+    });
+
+    const updateStudent = (item) =>
+      item.id === student.id
+        ? {
+            ...item,
+            lessonPrice: response.lessonPrice || 0,
+          }
+        : item;
+
+    setStudents((current) => current.map(updateStudent));
+    setActiveStudent((current) => (current?.id === student.id ? updateStudent(current) : current));
+  }
+
   function openStudentFromSearch(student) {
     setActiveStudent(student);
     setStudentSearch("");
@@ -987,6 +1042,7 @@ export function StudentsPage() {
         student={activeStudent}
         availableSubjects={availableSubjects}
         onChangeSubjects={handleStudentSubjectsChange}
+        onChangePrice={handleStudentPriceChange}
         onClose={() => setActiveStudent(null)}
         onMessage={() => {
           if (activeStudent) {

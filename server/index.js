@@ -117,6 +117,10 @@ const relationshipSubjectsSchema = z.object({
   subjectIds: z.array(z.string().trim().min(1)).max(1).default([]),
 });
 
+const relationshipPriceSchema = z.object({
+  lessonPrice: z.number().int().min(0).max(1000000).default(0),
+});
+
 const homeworkAttachmentSchema = z.object({
   name: z.string().trim().min(1).max(180),
   type: z.string().trim().max(120).optional().default("application/octet-stream"),
@@ -142,6 +146,7 @@ const groupHomeworkSchema = z.object({
   title: z.string().trim().min(2, "Homework title is required.").max(160),
   description: z.string().trim().min(2, "Homework description is required.").max(2000),
   dueDate: z.string().trim().optional().default(""),
+  attachments: z.array(homeworkAttachmentSchema).max(1).optional().default([]),
 });
 
 const homeworkReviewSchema = z.object({
@@ -204,6 +209,11 @@ const scheduleEntrySchema = z
 
 const lessonCancellationRequestSchema = z.object({
   reason: z.string().trim().max(1000, "Укажите причину короче.").optional().default(""),
+});
+
+const scheduleEntryUpdateSchema = z.object({
+  status: z.enum(["planned", "confirmed", "completed"]).optional(),
+  paymentStatus: z.enum(["paid", "unpaid"]).optional(),
 });
 
 const settingsPreferencesSchema = z.object({
@@ -449,10 +459,15 @@ function normalizeDateValue(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : null;
 }
 
+function formatMoneyRubles(value) {
+  const amount = Number(value || 0);
+  return amount > 0 ? `${amount.toLocaleString("ru-RU")} ₽` : "";
+}
+
 async function listTeacherStudentRows(teacherId) {
   return all(
     `
-      SELECT rel.id, rel.created_at, u.id AS student_id, u.full_name, u.username, u.email, u.phone_number, u.avatar_url
+      SELECT rel.id, rel.created_at, rel.lesson_price, u.id AS student_id, u.full_name, u.username, u.email, u.phone_number, u.avatar_url
       FROM teacher_student_relationships rel
       INNER JOIN users u ON u.id = rel.student_id
       WHERE rel.teacher_id = ?
@@ -478,6 +493,7 @@ async function listTeacherStudentsDetailed(teacherId) {
         phoneNumber: item.phone_number || "",
         avatar: item.avatar_url || "",
         connectedAt: item.created_at,
+        lessonPrice: item.lesson_price || 0,
         subject: subjects[0]?.name || "",
         subjects,
         status: "Active",
@@ -496,6 +512,20 @@ async function ensureTeacherStudentConnection(teacherId, studentId) {
     `,
     [teacherId, studentId],
   );
+}
+
+async function getStudentLessonPrice(teacherId, studentId) {
+  const relationship = await get(
+    `
+      SELECT lesson_price
+      FROM teacher_student_relationships
+      WHERE teacher_id = ? AND student_id = ?
+      LIMIT 1
+    `,
+    [teacherId, studentId],
+  );
+
+  return relationship?.lesson_price || 0;
 }
 
 async function getTeacherGroupsDetailed(teacherId) {
@@ -1026,6 +1056,9 @@ async function getScheduleEntryDetails(entryId, userId) {
         e.start_hour,
         e.end_hour,
         e.status,
+        e.completed_at,
+        e.payment_status,
+        e.payment_reminded_at,
         owner.role AS user_role,
         owner.full_name AS user_name,
         partner.full_name AS partner_name,
@@ -2515,20 +2548,14 @@ app.get("/api/analytics/overview", requireSession, requireRole("teacher"), async
             COALESCE(SUM(end_hour - start_hour), 0) AS total_hours,
             SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_lessons,
             COALESCE(SUM(CASE WHEN status = 'cancelled' THEN end_hour - start_hour ELSE 0 END), 0) AS cancelled_hours,
-            SUM(CASE WHEN status != 'cancelled' AND (date < ? OR (date = ? AND end_hour <= ?)) THEN 1 ELSE 0 END) AS completed_lessons,
-            COALESCE(SUM(CASE WHEN status != 'cancelled' AND (date < ? OR (date = ? AND end_hour <= ?)) THEN end_hour - start_hour ELSE 0 END), 0) AS completed_hours,
-            SUM(CASE WHEN status != 'cancelled' AND (date > ? OR (date = ? AND end_hour > ?)) THEN 1 ELSE 0 END) AS upcoming_lessons,
-            COALESCE(SUM(CASE WHEN status != 'cancelled' AND (date > ? OR (date = ? AND end_hour > ?)) THEN end_hour - start_hour ELSE 0 END), 0) AS upcoming_hours
+            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_lessons,
+            COALESCE(SUM(CASE WHEN status = 'completed' THEN end_hour - start_hour ELSE 0 END), 0) AS completed_hours,
+            SUM(CASE WHEN status != 'cancelled' AND status != 'completed' AND (date > ? OR (date = ? AND end_hour > ?)) THEN 1 ELSE 0 END) AS upcoming_lessons,
+            COALESCE(SUM(CASE WHEN status != 'cancelled' AND status != 'completed' AND (date > ? OR (date = ? AND end_hour > ?)) THEN end_hour - start_hour ELSE 0 END), 0) AS upcoming_hours
           FROM schedule_entries
           WHERE user_id = ? AND date >= ? AND date <= ?
         `,
         [
-          today,
-          today,
-          currentHour,
-          today,
-          today,
-          currentHour,
           today,
           today,
           currentHour,
@@ -2569,7 +2596,7 @@ app.get("/api/analytics/overview", requireSession, requireRole("teacher"), async
           WHERE user_id = ?
             AND date >= ?
             AND date <= ?
-            AND status != 'cancelled'
+            AND status = 'completed'
           GROUP BY date
           ORDER BY date ASC
         `,
@@ -2579,8 +2606,8 @@ app.get("/api/analytics/overview", requireSession, requireRole("teacher"), async
         `
           SELECT
             substr(date, 1, 7) AS month,
-            COALESCE(SUM(CASE WHEN status != 'cancelled' AND (date < ? OR (date = ? AND end_hour <= ?)) THEN end_hour - start_hour ELSE 0 END), 0) AS billable_hours,
-            COALESCE(SUM(CASE WHEN status != 'cancelled' AND (date > ? OR (date = ? AND end_hour > ?)) THEN end_hour - start_hour ELSE 0 END), 0) AS planned_hours,
+            COALESCE(SUM(CASE WHEN status = 'completed' THEN end_hour - start_hour ELSE 0 END), 0) AS billable_hours,
+            COALESCE(SUM(CASE WHEN status != 'cancelled' AND status != 'completed' THEN end_hour - start_hour ELSE 0 END), 0) AS planned_hours,
             COALESCE(SUM(CASE WHEN status = 'cancelled' THEN end_hour - start_hour ELSE 0 END), 0) AS cancelled_hours
           FROM schedule_entries
           WHERE user_id = ?
@@ -2588,7 +2615,7 @@ app.get("/api/analytics/overview", requireSession, requireRole("teacher"), async
           GROUP BY substr(date, 1, 7)
           ORDER BY month ASC
         `,
-        [today, today, currentHour, today, today, currentHour, req.user.id, financeStart],
+        [req.user.id, financeStart],
       ),
       all(
         `
@@ -3163,6 +3190,34 @@ app.patch("/api/teacher-students/:studentId/subjects", requireSession, requireRo
   }
 });
 
+app.patch("/api/teacher-students/:studentId/price", requireSession, requireRole("teacher"), async (req, res, next) => {
+  try {
+    const payload = relationshipPriceSchema.parse(req.body);
+    const relationship = await get(
+      `
+        SELECT id
+        FROM teacher_student_relationships
+        WHERE teacher_id = ? AND student_id = ?
+      `,
+      [req.user.id, req.params.studentId],
+    );
+
+    if (!relationship) {
+      sendAuthError(res, 404, "Relationship not found.", "relationship_not_found");
+      return;
+    }
+
+    await run(`UPDATE teacher_student_relationships SET lesson_price = ? WHERE id = ?`, [
+      payload.lessonPrice,
+      relationship.id,
+    ]);
+
+    res.json({ lessonPrice: payload.lessonPrice });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/teacher-students/:studentId/homework", requireSession, requireRole("teacher"), async (req, res, next) => {
   try {
     const payload = homeworkAssignmentSchema.parse({
@@ -3635,15 +3690,16 @@ app.post("/api/groups/:groupId/homework", requireSession, requireRole("teacher")
     const assignmentId = crypto.randomUUID();
     const timestamp = new Date().toISOString();
     const dueDate = normalizeDateValue(payload.dueDate);
+    const attachmentsJson = JSON.stringify(payload.attachments);
     const members = await all(`SELECT student_id FROM group_memberships WHERE group_id = ?`, [req.params.groupId]);
 
     await run(
       `
         INSERT INTO homework_assignments (
-          id, teacher_id, student_id, group_id, title, description, due_date, status, created_at, updated_at
-        ) VALUES (?, ?, NULL, ?, ?, ?, ?, 'assigned', ?, ?)
+          id, teacher_id, student_id, group_id, title, description, attachments_json, due_date, status, created_at, updated_at
+        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 'assigned', ?, ?)
       `,
-      [assignmentId, req.user.id, req.params.groupId, payload.title, payload.description, dueDate, timestamp, timestamp],
+      [assignmentId, req.user.id, req.params.groupId, payload.title, payload.description, attachmentsJson, dueDate, timestamp, timestamp],
     );
 
     await Promise.all(members.map((member) => ensureHomeworkSubmission(assignmentId, member.student_id)));
@@ -4405,6 +4461,9 @@ app.get("/api/schedule", requireSession, async (req, res, next) => {
             e.details,
             e.lesson_link,
             e.status,
+            e.completed_at,
+            e.payment_status,
+            e.payment_reminded_at,
             e.partner_id,
             partner.full_name AS partner_name,
             partner.subject AS partner_subject,
@@ -4430,6 +4489,9 @@ app.get("/api/schedule", requireSession, async (req, res, next) => {
       details: item.details || "",
       lessonLink: item.lesson_link || "",
       status: item.status,
+      completedAt: item.completed_at || "",
+      paymentStatus: item.payment_status || "unpaid",
+      paymentRemindedAt: item.payment_reminded_at || "",
       participant: item.partner_id
         ? {
             id: item.partner_id,
@@ -4665,6 +4727,168 @@ app.post("/api/schedule/entries", requireSession, async (req, res, next) => {
             participantId: payload.participantId,
           }
         : null,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/schedule/entries/:entryId", requireSession, async (req, res, next) => {
+  try {
+    const payload = scheduleEntryUpdateSchema.parse(req.body);
+    const entry = await getScheduleEntryDetails(req.params.entryId, req.user.id);
+
+    if (!entry) {
+      sendAuthError(res, 404, "Занятие не найдено.", "lesson_not_found");
+      return;
+    }
+
+    const nextStatus = payload.status || entry.status;
+    const nextPaymentStatus = payload.paymentStatus || entry.payment_status || "unpaid";
+    const timestamp = new Date().toISOString();
+    const completedAt =
+      payload.status === "completed" && entry.status !== "completed" ? timestamp : entry.completed_at || null;
+    const sharedCondition = entry.shared_event_id ? "shared_event_id = ?" : "id = ?";
+
+    await run(
+      `
+        UPDATE schedule_entries
+        SET status = ?,
+            completed_at = ?,
+            payment_status = ?,
+            updated_at = ?
+        WHERE ${sharedCondition}
+      `,
+      [nextStatus, completedAt, nextPaymentStatus, timestamp, entry.shared_event_id || entry.id],
+    );
+
+    const updatedEntry = await getScheduleEntryDetails(req.params.entryId, req.user.id);
+
+    res.json({
+      entry: {
+        id: updatedEntry.id,
+        date: updatedEntry.date,
+        startHour: updatedEntry.start_hour,
+        endHour: updatedEntry.end_hour,
+        sharedEventId: updatedEntry.shared_event_id || null,
+        title: updatedEntry.title,
+        details: updatedEntry.details || "",
+        lessonLink: updatedEntry.lesson_link || "",
+        status: updatedEntry.status,
+        completedAt: updatedEntry.completed_at || "",
+        paymentStatus: updatedEntry.payment_status || "unpaid",
+        paymentRemindedAt: updatedEntry.payment_reminded_at || "",
+        participant: updatedEntry.partner_id
+          ? {
+              id: updatedEntry.partner_id,
+              fullName: updatedEntry.partner_name,
+              role: updatedEntry.partner_role,
+            }
+          : null,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/schedule/entries/:entryId/payment-reminder", requireSession, async (req, res, next) => {
+  try {
+    const entry = await getScheduleEntryDetails(req.params.entryId, req.user.id);
+
+    if (!entry) {
+      sendAuthError(res, 404, "Занятие не найдено.", "lesson_not_found");
+      return;
+    }
+
+    if (!entry.partner_id) {
+      sendAuthError(res, 400, "У занятия нет ученика для напоминания.", "lesson_has_no_participant");
+      return;
+    }
+
+    if ((entry.payment_status || "unpaid") === "paid") {
+      sendAuthError(res, 400, "Занятие уже отмечено как оплаченное.", "lesson_already_paid");
+      return;
+    }
+
+    const timestamp = new Date().toISOString();
+    const sharedCondition = entry.shared_event_id ? "shared_event_id = ?" : "id = ?";
+    const lessonPrice = await getStudentLessonPrice(req.user.id, entry.partner_id);
+    const priceText = formatMoneyRubles(lessonPrice);
+
+    await run(
+      `
+        UPDATE schedule_entries
+        SET payment_reminded_at = ?,
+            updated_at = ?
+        WHERE ${sharedCondition}
+      `,
+      [timestamp, timestamp, entry.shared_event_id || entry.id],
+    );
+
+    await createNotification(entry.partner_id, {
+      type: "lesson_payment_reminder",
+      title: "Напоминание об оплате занятия",
+      body: `${req.user.fullName} напоминает об оплате занятия «${entry.title}» ${entry.date} в ${String(entry.start_hour).padStart(2, "0")}:00.${priceText ? ` Сумма к оплате: ${priceText}.` : ""}`,
+      link: "/schedule",
+      meta: {
+        entryId: req.params.entryId,
+        sharedEventId: entry.shared_event_id || "",
+        teacherId: req.user.id,
+        lessonPrice,
+      },
+    });
+
+    res.json({ success: true, paymentRemindedAt: timestamp, lessonPrice });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/lessons/completed", requireSession, async (req, res, next) => {
+  try {
+    const entries = await all(
+      `
+        SELECT
+          e.id,
+          e.date,
+          e.start_hour,
+          e.end_hour,
+          e.title,
+          e.details,
+          e.lesson_link,
+          e.status,
+          e.completed_at,
+          e.payment_status,
+          e.payment_reminded_at,
+          partner.full_name AS partner_name,
+          partner.role AS partner_role
+        FROM schedule_entries e
+        LEFT JOIN users partner ON partner.id = e.partner_id
+        WHERE e.user_id = ?
+          AND e.status = 'completed'
+        ORDER BY e.date DESC, e.start_hour DESC
+        LIMIT 80
+      `,
+      [req.user.id],
+    );
+
+    res.json({
+      entries: entries.map((entry) => ({
+        id: entry.id,
+        date: entry.date,
+        startHour: entry.start_hour,
+        endHour: entry.end_hour,
+        title: entry.title,
+        details: entry.details || "",
+        lessonLink: entry.lesson_link || "",
+        status: entry.status,
+        completedAt: entry.completed_at || "",
+        paymentStatus: entry.payment_status || "unpaid",
+        paymentRemindedAt: entry.payment_reminded_at || "",
+        participantName: entry.partner_name || "",
+        participantRole: entry.partner_role || "",
+      })),
     });
   } catch (error) {
     next(error);

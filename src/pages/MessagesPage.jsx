@@ -302,7 +302,7 @@ export function MessagesPage() {
                       : conversation.participant?.subject
                         || (conversation.participant?.role === "teacher" ? "\u041f\u0440\u0435\u043f\u043e\u0434\u0430\u0432\u0430\u0442\u0435\u043b\u044c" : "\u0423\u0447\u0435\u043d\u0438\u043a")}
                   </span>
-                  <em className="conversation-list__type">{conversation.type === "group" ? "Группа" : "Чат ученика"}</em>
+                  <em className="conversation-list__type">{conversation.type === "group" ? "Группа" : "Ученик"}</em>
                   <small>{conversation.lastMessage || "Начните диалог"}</small>
                 </div>
                 {conversation.isUnread ? <span className="conversation-list__unread" /> : null}

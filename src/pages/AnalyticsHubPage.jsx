@@ -38,10 +38,31 @@ function EmptyAnalytics({ text = "Данных пока нет." }) {
   return <div className="empty-state analytics-empty">{text}</div>;
 }
 
+function buildSmoothPath(points) {
+  if (!points.length) {
+    return "";
+  }
+
+  if (points.length === 1) {
+    return `M ${points[0].x} ${points[0].y}`;
+  }
+
+  return points.reduce((path, point, index) => {
+    if (index === 0) {
+      return `M ${point.x} ${point.y}`;
+    }
+
+    const previous = points[index - 1];
+    const controlX = previous.x + (point.x - previous.x) / 2;
+    return `${path} C ${controlX} ${previous.y}, ${controlX} ${point.y}, ${point.x} ${point.y}`;
+  }, "");
+}
+
 function LessonsLineChart({ data }) {
+  const [tooltip, setTooltip] = useState(null);
   const width = 680;
   const height = 260;
-  const padding = 32;
+  const padding = 42;
   const maxHours = Math.max(1, ...data.map((item) => Number(item.hours || 0)));
   const step = data.length > 1 ? (width - padding * 2) / (data.length - 1) : 0;
   const points = data.map((item, index) => {
@@ -49,28 +70,64 @@ function LessonsLineChart({ data }) {
     const y = height - padding - (Number(item.hours || 0) / maxHours) * (height - padding * 2);
     return { ...item, x, y };
   });
-  const polyline = points.map((point) => `${point.x},${point.y}`).join(" ");
+  const linePath = buildSmoothPath(points);
+  const yTicks = Array.from({ length: 5 }, (_, index) => {
+    const value = Math.round((maxHours / 4) * index);
+    const y = height - padding - (value / maxHours) * (height - padding * 2);
+    return { value, y };
+  });
+
+  function showTooltip(event, point) {
+    const bounds = event.currentTarget.ownerSVGElement.getBoundingClientRect();
+    setTooltip({
+      point,
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top,
+    });
+  }
 
   return (
-    <div className="analytics-chart analytics-chart--line">
+    <div className="analytics-chart analytics-chart--line" onMouseLeave={() => setTooltip(null)}>
       <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="График часов занятий за 14 дней">
-        <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} />
-        <line x1={padding} y1={padding} x2={padding} y2={height - padding} />
-        <polyline points={polyline} />
+        {yTicks.map((tick) => (
+          <g key={tick.value}>
+            <line className="analytics-chart__grid" x1={padding} y1={tick.y} x2={width - padding} y2={tick.y} />
+            <text className="analytics-chart__axis" x="8" y={tick.y + 4}>
+              {formatHours(tick.value)}
+            </text>
+          </g>
+        ))}
+        {tooltip?.point ? <line className="analytics-chart__marker-line" x1={tooltip.point.x} y1={padding - 10} x2={tooltip.point.x} y2={height - padding} /> : null}
+        <path className="analytics-chart__path" d={linePath} />
         {points.map((point) => (
           <g key={point.date}>
-            <circle cx={point.x} cy={point.y} r="5" />
-            <text x={point.x} y={height - 8} textAnchor="middle">
-              {formatDate(point.date)}
-            </text>
-            {point.hours > 0 ? (
-              <text x={point.x} y={Math.max(18, point.y - 12)} textAnchor="middle" className="analytics-chart__value">
-                {point.hours}
-              </text>
-            ) : null}
+            <circle className="analytics-chart__dot" cx={point.x} cy={point.y} r={tooltip?.point?.date === point.date ? 5.5 : 4} />
+            <rect
+              className="analytics-chart__hit-area"
+              x={point.x - Math.max(step / 2, 18)}
+              y={padding - 10}
+              width={Math.max(step, 36)}
+              height={height - padding * 2 + 20}
+              onMouseMove={(event) => showTooltip(event, point)}
+              onClick={(event) => showTooltip(event, point)}
+            />
           </g>
         ))}
       </svg>
+      {tooltip?.point ? (
+        <div
+          className="analytics-chart__floating-tooltip"
+          style={{
+            left: `${tooltip.x}px`,
+            top: `${tooltip.y}px`,
+          }}
+        >
+          <strong>{formatHours(tooltip.point.hours)}</strong>
+          <span>
+            {formatDate(tooltip.point.date)} · {formatNumber(tooltip.point.lessons)} занятий
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -323,17 +380,17 @@ export function AnalyticsHubPage() {
   return (
     <AppLayout title="Аналитика" eyebrow={periodLabel} contentMode="custom">
       <section className="combined-page">
-        <div className="combined-page__tabs">
+        <div className={`analytics-tabs-switch analytics-tabs-switch--${activeTab}`}>
           <button
             type="button"
-            className={`combined-page__tab${activeTab === "analytics" ? " combined-page__tab--active" : ""}`}
+            className={activeTab === "analytics" ? "analytics-tabs-switch__item analytics-tabs-switch__item--active" : "analytics-tabs-switch__item"}
             onClick={() => setActiveTab("analytics")}
           >
             Аналитика
           </button>
           <button
             type="button"
-            className={`combined-page__tab${activeTab === "finance" ? " combined-page__tab--active" : ""}`}
+            className={activeTab === "finance" ? "analytics-tabs-switch__item analytics-tabs-switch__item--active" : "analytics-tabs-switch__item"}
             onClick={() => setActiveTab("finance")}
           >
             Финансы

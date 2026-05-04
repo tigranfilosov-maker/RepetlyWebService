@@ -398,6 +398,7 @@ function ContentSkeleton({ title, sectionLayout }) {
 }
 
 export function AppLayout({ title, sectionLayout, contentMode = "default", contentClassName = "", children = null }) {
+  const location = useLocation();
   const shouldRenderCustomContent = contentMode !== "default";
 
   return (
@@ -407,7 +408,9 @@ export function AppLayout({ title, sectionLayout, contentMode = "default", conte
       <main className="content">
         <Header title={title} />
         <div className={`content__body${contentClassName ? ` ${contentClassName}` : ""}`}>
-          {shouldRenderCustomContent ? children : <ContentSkeleton title={title} sectionLayout={sectionLayout} />}
+          <div key={`${location.pathname}${location.search}`} className="page-route-transition">
+            {shouldRenderCustomContent ? children : <ContentSkeleton title={title} sectionLayout={sectionLayout} />}
+          </div>
         </div>
       </main>
     </div>

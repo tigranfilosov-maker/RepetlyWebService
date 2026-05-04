@@ -206,12 +206,14 @@ export async function initializeDatabase() {
       id TEXT PRIMARY KEY,
       teacher_id TEXT NOT NULL,
       student_id TEXT NOT NULL,
+      lesson_price INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       UNIQUE(teacher_id, student_id),
       FOREIGN KEY(teacher_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY(student_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
+  await ensureColumn("teacher_student_relationships", "lesson_price", "lesson_price INTEGER NOT NULL DEFAULT 0");
 
   await run(`
     CREATE TABLE IF NOT EXISTS teacher_subjects (
@@ -345,6 +347,9 @@ export async function initializeDatabase() {
   `);
   await ensureColumn("schedule_entries", "shared_event_id", "shared_event_id TEXT");
   await ensureColumn("schedule_entries", "lesson_link", "lesson_link TEXT");
+  await ensureColumn("schedule_entries", "completed_at", "completed_at TEXT");
+  await ensureColumn("schedule_entries", "payment_status", "payment_status TEXT NOT NULL DEFAULT 'unpaid'");
+  await ensureColumn("schedule_entries", "payment_reminded_at", "payment_reminded_at TEXT");
 
   await run(`
     CREATE TABLE IF NOT EXISTS lesson_cancellation_requests (
